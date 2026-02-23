@@ -4,6 +4,7 @@ A cinematic web version of the bluffing game Skull (also known as Skulls and Ros
 
 ## Features
 - Lobby with room code and player management
+- Online multiplayer via Supabase (room codes + realtime sync)
 - Full round flow: placement, bidding, reveal, resolution
 - Score to 2 points to win, or last player standing
 - Animated table UI, card flips, and themed styling
@@ -39,8 +40,9 @@ npm run start
 ```
 
 ## How to Play (In This App)
-1. Add 3 to 8 players in the lobby.
-2. Start the game and pick who you are controlling using the "Control As" selector.
+1. Create a room or join with a 4-character code.
+2. Add 3 to 8 players in the lobby (or have each player join on their own device).
+3. In local mode, use the "Control As" selector to switch players.
 3. On your turn, place a card or start the bidding.
 4. The highest bidder reveals cards until they reach their bid or flip a skull.
 5. Win two successful bids to win the game.
@@ -80,8 +82,58 @@ Be the first player to win two successful bids, or be the last remaining player 
 - If only one player remains, they also win.
 
 ## Notes
-- This version is currently hotseat (local) play. Multiplayer networking is the next step.
-- Room codes are displayed, but online sync is not enabled yet.
+- If Supabase env vars are not set, the app runs in local hotseat mode.
+- Online mode uses realtime room sync and room codes.
+
+## Realtime Multiplayer (Supabase)
+
+### 1) Create a Supabase project
+Create a new project at Supabase and grab:
+- `Project URL`
+- `anon public key`
+
+### 2) Create the `rooms` table
+Run this SQL in the Supabase SQL editor:
+
+```sql
+create table if not exists public.rooms (
+  room_code text primary key,
+  state jsonb not null,
+  version integer not null default 1,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.rooms enable row level security;
+
+create policy "allow read" on public.rooms
+  for select
+  using (true);
+
+create policy "allow insert" on public.rooms
+  for insert
+  with check (true);
+
+create policy "allow update" on public.rooms
+  for update
+  using (true);
+```
+
+Enable realtime for the table (Database -> Replication -> `rooms`),
+or run:
+
+```sql
+alter publication supabase_realtime add table public.rooms;
+```
+
+### 3) Add environment variables
+Create `.env.local`:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=your-project-url
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+```
+
+Restart the dev server after adding env vars.
 
 ## Deploy to Vercel
 1. Push this repo to GitHub.

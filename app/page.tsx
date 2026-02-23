@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useReducer, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   MAX_PLAYERS,
   MIN_PLAYERS,
@@ -15,24 +15,157 @@ import {
   isPlayersTurn,
   normalizeRoomCode,
 } from "./game/engine";
-import type { CardType, Player, RoundState } from "./game/engine";
+import type { Action, CardType, GameState, Player, RoundState } from "./game/engine";
 import { AVATARS, DEFAULT_AVATAR_ID, getAvatarById } from "./game/avatars";
 import { FlipCard, RoseIcon, ScorePip, SkullIcon } from "./game/ui";
+import { getSupabaseClient } from "./lib/supabaseClient";
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(Math.max(value, min), max);
 
+type SyncStatus = "offline" | "connecting" | "online" | "error";
+
+type RoomRow = {
+  room_code: string;
+  state: GameState;
+  version: number;
+  updated_at: string;
+};
+
 export default function Home() {
-  const [state, dispatch] = useReducer(gameReducer, undefined, createLobbyState);
+  const [state, setState] = useState<GameState>(() => createLobbyState());
+  const [roomVersion, setRoomVersion] = useState(0);
+  const [roomCode, setRoomCode] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("offline");
+  const [roomError, setRoomError] = useState<string | null>(null);
   const [view, setView] = useState<"entry" | "lobby">("entry");
   const [playerName, setPlayerName] = useState("");
   const [avatarId, setAvatarId] = useState(DEFAULT_AVATAR_ID);
   const [roomCodeInput, setRoomCodeInput] = useState("");
   const [bidAmount, setBidAmount] = useState(1);
 
+  const supabase = useMemo(() => getSupabaseClient(), []);
+  const onlineEnabled = Boolean(supabase);
+
+  const [clientId] = useState(() => {
+    if (typeof window === "undefined") {
+      return `local-${Math.random().toString(36).slice(2, 10)}`;
+    }
+    const stored = window.localStorage.getItem("skull-client-id");
+    if (stored) {
+      return stored;
+    }
+    const generated =
+      typeof window.crypto?.randomUUID === "function"
+        ? window.crypto.randomUUID()
+        : Math.random().toString(36).slice(2, 10);
+    window.localStorage.setItem("skull-client-id", generated);
+    return generated;
+  });
+
+  const stateRef = useRef(state);
+  const versionRef = useRef(roomVersion);
+  const roomCodeRef = useRef(roomCode);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    versionRef.current = roomVersion;
+  }, [roomVersion]);
+
+  useEffect(() => {
+    roomCodeRef.current = roomCode;
+  }, [roomCode]);
+
+  useEffect(() => {
+    if (!supabase || !roomCode) {
+      return;
+    }
+    const channel = supabase
+      .channel(`room:${roomCode}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "rooms",
+          filter: `room_code=eq.${roomCode}`,
+        },
+        (payload) => {
+          const next = payload.new as RoomRow;
+          if (!next?.version || next.version <= versionRef.current) {
+            return;
+          }
+          setState(next.state);
+          setRoomVersion(next.version);
+        }
+      )
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") {
+          setSyncStatus("online");
+        }
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase, roomCode]);
+
+  const syncRoomState = async (nextState: GameState) => {
+    if (!supabase || !roomCodeRef.current) {
+      return;
+    }
+    const currentVersion = versionRef.current;
+    const nextVersion = currentVersion + 1;
+    const { data, error } = await supabase
+      .from("rooms")
+      .update({
+        state: nextState,
+        version: nextVersion,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("room_code", roomCodeRef.current)
+      .eq("version", currentVersion)
+      .select("version")
+      .single();
+
+    if (error || !data) {
+      const { data: latest } = await supabase
+        .from("rooms")
+        .select("state, version")
+        .eq("room_code", roomCodeRef.current)
+        .single();
+      if (latest) {
+        setState(latest.state as GameState);
+        setRoomVersion(latest.version);
+      }
+      return;
+    }
+    setRoomVersion(nextVersion);
+  };
+
+  const dispatchAction = (action: Action) => {
+    setRoomError(null);
+    if (!supabase || !roomCodeRef.current) {
+      setState((prev) => gameReducer(prev, action));
+      return;
+    }
+    const current = stateRef.current;
+    const nextState = gameReducer(current, action);
+    if (nextState === current) {
+      return;
+    }
+    setState(nextState);
+    void syncRoomState(nextState);
+  };
+
   const roundState = state.roundState;
+  const localPlayerId =
+    onlineEnabled && roomCode ? clientId : state.activePlayerId;
   const activePlayer = state.players.find(
-    (player) => player.id === state.activePlayerId
+    (player) => player.id === localPlayerId
   );
   const currentPlayer = state.players.find(
     (player) => player.id === roundState?.currentPlayerId
@@ -101,45 +234,189 @@ export default function Home() {
     state,
   ]);
 
+  const syncLabel = !onlineEnabled
+    ? "Local only"
+    : !roomCode
+    ? "Online ready"
+    : syncStatus === "online"
+    ? "Online sync live"
+    : syncStatus === "connecting"
+    ? "Connecting..."
+    : syncStatus === "error"
+    ? "Sync error"
+    : "Offline";
+
+  const syncTone =
+    syncStatus === "online"
+      ? "text-[var(--success)]"
+      : syncStatus === "error"
+      ? "text-[var(--danger)]"
+      : "text-[var(--muted)]";
+
   const trimmedName = playerName.trim();
   const normalizedRoom = normalizeRoomCode(roomCodeInput);
   const canSubmitName = trimmedName.length > 0;
   const canJoinRoom = canSubmitName && normalizedRoom.length === 4;
 
-  const handleCreateRoom = () => {
+  const handleCreateRoom = async () => {
     if (!canSubmitName) {
       return;
     }
-    dispatch({ type: "INIT_ROOM", roomId: "" });
-    dispatch({
+    setRoomError(null);
+    if (!supabase) {
+      const localRoom = createLobbyState();
+      const nextState = gameReducer(localRoom, {
+        type: "ADD_PLAYER",
+        name: trimmedName,
+        avatarId,
+        id: clientId,
+      });
+      setState(nextState);
+      setRoomCode(null);
+      setRoomVersion(0);
+      setView("lobby");
+      setPlayerName("");
+      setRoomCodeInput("");
+      return;
+    }
+
+    setSyncStatus("connecting");
+    let createdRoom: GameState | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const candidate = createLobbyState();
+      const { error } = await supabase.from("rooms").insert({
+        room_code: candidate.roomId,
+        state: candidate,
+        version: 1,
+      });
+      if (!error) {
+        createdRoom = candidate;
+        break;
+      }
+    }
+
+    if (!createdRoom) {
+      setRoomError("Could not create a room. Try again.");
+      setSyncStatus("error");
+      return;
+    }
+
+    setRoomCode(createdRoom.roomId);
+    setRoomVersion(1);
+    setState(createdRoom);
+    setView("lobby");
+    setSyncStatus("online");
+
+    const withPlayer = gameReducer(createdRoom, {
       type: "ADD_PLAYER",
       name: trimmedName,
       avatarId,
+      id: clientId,
     });
+    if (withPlayer !== createdRoom) {
+      const { error } = await supabase
+        .from("rooms")
+        .update({
+          state: withPlayer,
+          version: 2,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("room_code", createdRoom.roomId)
+        .eq("version", 1);
+      if (!error) {
+        setState(withPlayer);
+        setRoomVersion(2);
+      }
+    }
     setPlayerName("");
     setRoomCodeInput("");
-    setView("lobby");
   };
 
-  const handleJoinRoom = () => {
+  const handleJoinRoom = async () => {
     if (!canJoinRoom) {
       return;
     }
-    dispatch({ type: "INIT_ROOM", roomId: normalizedRoom });
-    dispatch({
+    setRoomError(null);
+    if (!supabase) {
+      const localRoom = createLobbyState(normalizedRoom);
+      const nextState = gameReducer(localRoom, {
+        type: "ADD_PLAYER",
+        name: trimmedName,
+        avatarId,
+        id: clientId,
+      });
+      setState(nextState);
+      setRoomCode(null);
+      setRoomVersion(0);
+      setView("lobby");
+      setPlayerName("");
+      return;
+    }
+
+    setSyncStatus("connecting");
+    const { data, error } = await supabase
+      .from("rooms")
+      .select("state, version")
+      .eq("room_code", normalizedRoom)
+      .single();
+
+    if (error || !data) {
+      setRoomError("Room not found. Check the code and try again.");
+      setSyncStatus("error");
+      return;
+    }
+
+    const roomState = data.state as GameState;
+    if (roomState.phase !== "lobby") {
+      setRoomError("That game already started. Join another room.");
+      setState(roomState);
+      setRoomCode(normalizedRoom);
+      setRoomVersion(data.version);
+      setView("lobby");
+      setSyncStatus("online");
+      return;
+    }
+
+    setState(roomState);
+    setRoomCode(normalizedRoom);
+    setRoomVersion(data.version);
+    setView("lobby");
+    setSyncStatus("online");
+
+    if (roomState.players.some((player) => player.id === clientId)) {
+      setPlayerName("");
+      return;
+    }
+
+    const withPlayer = gameReducer(roomState, {
       type: "ADD_PLAYER",
       name: trimmedName,
       avatarId,
+      id: clientId,
     });
+    if (withPlayer !== roomState) {
+      const { error: updateError } = await supabase
+        .from("rooms")
+        .update({
+          state: withPlayer,
+          version: data.version + 1,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("room_code", normalizedRoom)
+        .eq("version", data.version);
+      if (!updateError) {
+        setState(withPlayer);
+        setRoomVersion(data.version + 1);
+      }
+    }
     setPlayerName("");
-    setView("lobby");
   };
 
   const handleAddPlayer = () => {
     if (!canSubmitName) {
       return;
     }
-    dispatch({
+    dispatchAction({
       type: "ADD_PLAYER",
       name: trimmedName,
       avatarId,
@@ -148,10 +425,26 @@ export default function Home() {
   };
 
   const handleLeaveGame = () => {
-    dispatch({ type: "INIT_ROOM", roomId: "" });
+    if (supabase && roomCodeRef.current) {
+      const current = stateRef.current;
+      if (current.phase === "lobby") {
+        const nextState = gameReducer(current, {
+          type: "REMOVE_PLAYER",
+          id: clientId,
+        });
+        if (nextState !== current) {
+          void syncRoomState(nextState);
+          setState(nextState);
+        }
+      }
+    }
+    setRoomCode(null);
+    setRoomVersion(0);
+    setState(createLobbyState());
     setView("entry");
     setPlayerName("");
     setRoomCodeInput("");
+    setRoomError(null);
   };
 
   return (
@@ -186,7 +479,8 @@ export default function Home() {
                 </p>
               </div>
               <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-[var(--muted)]">
-                Room codes are 4 characters
+                Room codes are 4 characters ·{" "}
+                <span className={syncTone}>{syncLabel}</span>
               </div>
             </div>
 
@@ -241,11 +535,18 @@ export default function Home() {
               >
                 Join Room
               </button>
+              {roomError && (
+                <p className="mt-3 text-xs text-[var(--danger)]">
+                  {roomError}
+                </p>
+              )}
             </div>
           </div>
 
           <p className="text-center text-xs text-[var(--muted)]">
-            Room join flow is ready. Live multiplayer sync is coming next.
+            {onlineEnabled
+              ? "Realtime multiplayer is enabled."
+              : "Add Supabase keys to enable realtime multiplayer."}
           </p>
         </section>
       )}
@@ -264,7 +565,7 @@ export default function Home() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-[var(--muted)]">
-                  Local room for now - Online sync comes next
+                  <span className={syncTone}>{syncLabel}</span>
                 </div>
                 <button
                   onClick={handleLeaveGame}
@@ -324,7 +625,7 @@ export default function Home() {
                     </div>
                     <button
                       onClick={() =>
-                        dispatch({ type: "REMOVE_PLAYER", id: player.id })
+                        dispatchAction({ type: "REMOVE_PLAYER", id: player.id })
                       }
                       className="text-xs uppercase tracking-[0.2em] text-[var(--muted)] hover:text-white"
                     >
@@ -337,7 +638,7 @@ export default function Home() {
 
             <div className="mt-8 flex flex-wrap items-center gap-4">
               <button
-                onClick={() => dispatch({ type: "START_GAME" })}
+                onClick={() => dispatchAction({ type: "START_GAME" })}
                 disabled={state.players.length < MIN_PLAYERS}
                 className="rounded-full bg-[var(--accent-2)] px-8 py-3 text-sm font-semibold text-black shadow-lg shadow-black/30 transition hover:scale-[1.01] disabled:opacity-50"
               >
@@ -430,13 +731,13 @@ export default function Home() {
                 </p>
                 <div className="mt-4 flex flex-wrap gap-3">
                   <button
-                    onClick={() => dispatch({ type: "START_GAME" })}
+                    onClick={() => dispatchAction({ type: "START_GAME" })}
                     className="rounded-full bg-[var(--accent-2)] px-5 py-2 text-xs font-semibold text-black"
                   >
                     Restart
                   </button>
                   <button
-                    onClick={() => dispatch({ type: "RESET_GAME" })}
+                    onClick={() => dispatchAction({ type: "RESET_GAME" })}
                     className="rounded-full border border-white/10 px-5 py-2 text-xs font-semibold text-white/80"
                   >
                     Back to Lobby
@@ -459,7 +760,7 @@ export default function Home() {
                       <ActionButton
                         disabled={!canAct || !hasCard(activePlayer, "rose")}
                         onClick={() =>
-                          dispatch({
+                          dispatchAction({
                             type: "PLACE_CARD",
                             playerId: activePlayer.id,
                             card: "rose",
@@ -471,7 +772,7 @@ export default function Home() {
                       <ActionButton
                         disabled={!canAct || !hasCard(activePlayer, "skull")}
                         onClick={() =>
-                          dispatch({
+                          dispatchAction({
                             type: "PLACE_CARD",
                             playerId: activePlayer.id,
                             card: "skull",
@@ -500,7 +801,7 @@ export default function Home() {
                         <ActionButton
                           disabled={!canAct || !canBid(activePlayer)}
                           onClick={() =>
-                            dispatch({
+                            dispatchAction({
                               type: "START_BID",
                               playerId: activePlayer.id,
                               amount: clamp(
@@ -541,7 +842,7 @@ export default function Home() {
                       <ActionButton
                         disabled={!canRaise}
                         onClick={() =>
-                          dispatch({
+                          dispatchAction({
                             type: "RAISE_BID",
                             playerId: activePlayer.id,
                             amount: clamp(bidAmount, minBid, maxBid),
@@ -553,7 +854,7 @@ export default function Home() {
                       <ActionButton
                         disabled={!canAct}
                         onClick={() =>
-                          dispatch({
+                          dispatchAction({
                             type: "PASS_BID",
                             playerId: activePlayer.id,
                           })
@@ -591,12 +892,12 @@ export default function Home() {
                     </p>
                     <div className="mt-4 flex flex-wrap gap-3">
                       <ActionButton
-                        onClick={() => dispatch({ type: "NEXT_ROUND" })}
+                        onClick={() => dispatchAction({ type: "NEXT_ROUND" })}
                       >
                         Next Round
                       </ActionButton>
                       <ActionButton
-                        onClick={() => dispatch({ type: "RESET_GAME" })}
+                        onClick={() => dispatchAction({ type: "RESET_GAME" })}
                       >
                         Back to Lobby
                       </ActionButton>
@@ -623,7 +924,7 @@ export default function Home() {
                       total={activePlayer.hand.length}
                       disabled={!canAct || roundState?.phase !== "place"}
                       onPlay={() =>
-                        dispatch({
+                        dispatchAction({
                           type: "PLACE_CARD",
                           playerId: activePlayer.id,
                           card,
@@ -688,18 +989,18 @@ export default function Home() {
                 roundState?.phase === "reveal" &&
                 roundState.reveal.bidderId === activePlayer?.id
               }
-              onReveal={(targetPlayerId) =>
-                dispatch({
-                  type: "REVEAL_CARD",
-                  playerId: roundState?.reveal.bidderId ?? "",
-                  targetPlayerId,
-                })
-              }
+                  onReveal={(targetPlayerId) =>
+                    dispatchAction({
+                      type: "REVEAL_CARD",
+                      playerId: roundState?.reveal.bidderId ?? "",
+                      targetPlayerId,
+                    })
+                  }
               onDropCard={(card) => {
                 if (!activePlayer || !canPlace) {
                   return;
                 }
-                dispatch({
+                dispatchAction({
                   type: "PLACE_CARD",
                   playerId: activePlayer.id,
                   card,
@@ -753,27 +1054,29 @@ export default function Home() {
               ))}
             </div>
 
-            <div className="mt-6">
-              <label className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
-                Control As
-              </label>
-              <select
-                value={state.activePlayerId ?? ""}
-                onChange={(event) =>
-                  dispatch({
-                    type: "SET_ACTIVE_PLAYER",
-                    id: event.target.value,
-                  })
-                }
-                className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white"
-              >
-                {getActivePlayerOptions(state.players).map((player) => (
-                  <option key={player.id} value={player.id}>
-                    {player.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {!onlineEnabled && (
+              <div className="mt-6">
+                <label className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                  Control As
+                </label>
+                <select
+                  value={state.activePlayerId ?? ""}
+                  onChange={(event) =>
+                    dispatchAction({
+                      type: "SET_ACTIVE_PLAYER",
+                      id: event.target.value,
+                    })
+                  }
+                  className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white"
+                >
+                  {getActivePlayerOptions(state.players).map((player) => (
+                    <option key={player.id} value={player.id}>
+                      {player.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </aside>
         </section>
       )}

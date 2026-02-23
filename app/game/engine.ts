@@ -71,7 +71,7 @@ export type GameState = {
 
 export type Action =
   | { type: "INIT_ROOM"; roomId: string }
-  | { type: "ADD_PLAYER"; name: string; avatarId: string }
+  | { type: "ADD_PLAYER"; name: string; avatarId: string; id?: string }
   | { type: "REMOVE_PLAYER"; id: string }
   | { type: "SET_ACTIVE_PLAYER"; id: string }
   | { type: "START_GAME" }
@@ -234,15 +234,27 @@ export const gameReducer = (state: GameState, action: Action): GameState => {
       if (state.phase !== "lobby") {
         return state;
       }
-      if (state.players.length >= MAX_PLAYERS) {
-        return state;
-      }
       const name = action.name.trim();
       if (!name) {
         return state;
       }
+      const playerId = action.id ?? createId();
+      const existing = state.players.find((player) => player.id === playerId);
+      if (existing) {
+        return {
+          ...state,
+          players: state.players.map((player) =>
+            player.id === playerId
+              ? { ...player, name, avatarId: action.avatarId }
+              : player
+          ),
+        };
+      }
+      if (state.players.length >= MAX_PLAYERS) {
+        return state;
+      }
       const player: Player = {
-        id: createId(),
+        id: playerId,
         name,
         color: PLAYER_COLORS[state.players.length % PLAYER_COLORS.length],
         avatarId: action.avatarId,
