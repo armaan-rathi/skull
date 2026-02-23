@@ -1,17 +1,26 @@
 import type { Metadata } from "next";
-import { Cinzel, Manrope } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const cinzel = Cinzel({
+const cinzel = localFont({
   variable: "--font-display",
-  subsets: ["latin"],
-  weight: ["400", "600", "700"],
+  src: [
+    { path: "./fonts/Cinzel-400.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/Cinzel-600.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/Cinzel-700.woff2", weight: "700", style: "normal" },
+  ],
+  display: "swap",
 });
 
-const manrope = Manrope({
+const manrope = localFont({
   variable: "--font-body",
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  src: [
+    { path: "./fonts/Manrope-400.woff2", weight: "400", style: "normal" },
+    { path: "./fonts/Manrope-500.woff2", weight: "500", style: "normal" },
+    { path: "./fonts/Manrope-600.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/Manrope-700.woff2", weight: "700", style: "normal" },
+  ],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
