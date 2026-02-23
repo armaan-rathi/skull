@@ -1,26 +1,231 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
+  --bg: #0f0a08;
+  --bg-elev: #19110e;
+  --panel: #1f1512;
+  --panel-2: #261a16;
+  --ink: #f7efe6;
+  --muted: #c3b2a6;
+  --accent: #b63a48;
+  --accent-2: #d8b26e;
+  --accent-3: #4c9f9a;
+  --success: #7bb274;
+  --danger: #d15645;
+  --ring: rgba(214, 178, 110, 0.55);
+  --shadow: rgba(0, 0, 0, 0.4);
+  --card-back: #2c1f1a;
+  --card-edge: #3a2a24;
+  --card-front: #f7efe6;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-background: var(--bg);
+  --color-foreground: var(--ink);
+  --font-sans: var(--font-body);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: radial-gradient(
+      circle at top,
+      rgba(98, 45, 39, 0.65),
+      transparent 58%
+    ),
+    radial-gradient(
+      circle at 20% 20%,
+      rgba(216, 178, 110, 0.22),
+      transparent 40%
+    ),
+    var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body), "Manrope", system-ui, sans-serif;
+  min-height: 100vh;
+}
+
+.font-display {
+  font-family: var(--font-display), "Cinzel", serif;
+  letter-spacing: 0.02em;
+}
+
+.panel {
+  background: linear-gradient(180deg, rgba(31, 21, 18, 0.94), rgba(20, 13, 11, 0.92));
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 18px 40px var(--shadow);
+}
+
+.panel-soft {
+  background: rgba(29, 20, 17, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.glow-ring {
+  box-shadow: 0 0 0 2px var(--ring), 0 12px 30px rgba(0, 0, 0, 0.4);
+}
+
+.card {
+  width: 72px;
+  height: 108px;
+  perspective: 1000px;
+}
+
+.card-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 0.6s ease;
+}
+
+.card.flipped .card-inner {
+  transform: rotateY(180deg);
+}
+
+.card-face {
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  backface-visibility: hidden;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--card-edge);
+  overflow: hidden;
+}
+
+.card-face > * {
+  position: relative;
+  z-index: 1;
+}
+
+.card-face::before {
+  content: "";
+  position: absolute;
+  inset: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
+
+.card-face::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  background: linear-gradient(
+      120deg,
+      rgba(255, 255, 255, 0.16),
+      transparent 35%
+    ),
+    linear-gradient(300deg, rgba(0, 0, 0, 0.24), transparent 40%);
+  mix-blend-mode: screen;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.card-back {
+  background: radial-gradient(
+      circle at top,
+      rgba(214, 178, 110, 0.22),
+      transparent 55%
+    ),
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.06) 0,
+      rgba(255, 255, 255, 0.06) 6px,
+      transparent 6px,
+      transparent 12px
+    ),
+    linear-gradient(160deg, #2a1a16, #4a2a24);
+  color: rgba(255, 255, 255, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 -18px 24px rgba(0, 0, 0, 0.45);
+}
+
+.card-front {
+  background: radial-gradient(
+      circle at 20% 20%,
+      rgba(214, 178, 110, 0.28),
+      transparent 42%
+    ),
+    linear-gradient(160deg, #f9f2e7, #ecd9c5);
+  transform: rotateY(180deg);
+  color: #2a1a16;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35),
+    inset 0 -16px 22px rgba(0, 0, 0, 0.12);
+}
+
+.stack {
+  position: relative;
+  width: 92px;
+  height: 128px;
+}
+
+.stack-card {
+  position: absolute;
+  left: 0;
+  width: 72px;
+  height: 108px;
+  border-radius: 14px;
+  background: linear-gradient(160deg, #2a1a16, #4a2a24);
+  border: 1px solid var(--card-edge);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.45);
+}
+
+.stack-card-empty {
+  background: transparent;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  box-shadow: none;
+}
+
+.stack-card:nth-child(1) {
+  top: 12px;
+}
+
+.stack-card:nth-child(2) {
+  top: 8px;
+  left: 4px;
+}
+
+.stack-card:nth-child(3) {
+  top: 4px;
+  left: 8px;
+}
+
+.stack-card:nth-child(4) {
+  top: 0;
+  left: 12px;
+}
+
+@keyframes float-in {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(216, 178, 110, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 16px 2px rgba(216, 178, 110, 0.45);
+  }
+}
+
+.animate-float {
+  animation: float-in 0.6s ease-out both;
+}
+
+.animate-glow {
+  animation: glow-pulse 3s ease-in-out infinite;
 }

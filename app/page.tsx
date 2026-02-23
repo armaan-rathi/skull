@@ -1,65 +1,1142 @@
-import Image from "next/image";
+"use client";
+
+import { useMemo, useReducer, useState, type ReactNode } from "react";
+import {
+  MAX_PLAYERS,
+  MIN_PLAYERS,
+  canBid,
+  createLobbyState,
+  gameReducer,
+  getActivePlayerOptions,
+  getGameSummary,
+  getMaxBid,
+  getMinBid,
+  hasCard,
+  isPlayersTurn,
+  normalizeRoomCode,
+} from "./game/engine";
+import type { CardType, Player, RoundState } from "./game/engine";
+import { AVATARS, DEFAULT_AVATAR_ID, getAvatarById } from "./game/avatars";
+import { FlipCard, RoseIcon, ScorePip, SkullIcon } from "./game/ui";
+
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(Math.max(value, min), max);
 
 export default function Home() {
+  const [state, dispatch] = useReducer(gameReducer, undefined, createLobbyState);
+  const [view, setView] = useState<"entry" | "lobby">("entry");
+  const [playerName, setPlayerName] = useState("");
+  const [avatarId, setAvatarId] = useState(DEFAULT_AVATAR_ID);
+  const [roomCodeInput, setRoomCodeInput] = useState("");
+  const [bidAmount, setBidAmount] = useState(1);
+
+  const roundState = state.roundState;
+  const activePlayer = state.players.find(
+    (player) => player.id === state.activePlayerId
+  );
+  const currentPlayer = state.players.find(
+    (player) => player.id === roundState?.currentPlayerId
+  );
+
+  const totalPlaced = useMemo(
+    () => getMaxBid(state.players),
+    [state.players]
+  );
+  const minBid = useMemo(() => getMinBid(roundState), [roundState]);
+  const maxBid = Math.max(minBid, totalPlaced);
+
+  const canAct =
+    !!activePlayer && isPlayersTurn(roundState, activePlayer.id ?? "");
+  const canRaise = canAct && minBid <= totalPlaced;
+  const canPlace = state.phase === "play" && roundState?.phase === "place" && canAct;
+
+  const phaseLabel = useMemo(() => {
+    if (!roundState) return "Lobby";
+    if (state.phase === "gameEnd") return "Finale";
+    return roundState.phase === "place"
+      ? "Placement"
+      : roundState.phase === "bid"
+      ? "Bidding"
+      : roundState.phase === "reveal"
+      ? "Reveal"
+      : "Resolution";
+  }, [roundState, state.phase]);
+
+  const bidLeader = roundState?.bidding.highestBidderId
+    ? state.players.find(
+        (player) => player.id === roundState.bidding.highestBidderId
+      )
+    : null;
+
+  const revealBidder = roundState?.reveal.bidderId
+    ? state.players.find((player) => player.id === roundState.reveal.bidderId)
+    : null;
+
+  const statusMessage = useMemo(() => {
+    if (!roundState) {
+      return "Lobby open.";
+    }
+    if (state.phase === "gameEnd") {
+      return getGameSummary(state);
+    }
+    if (roundState.phase === "place") {
+      return `${currentPlayer?.name ?? "Player"} is placing a card or starting the bid.`;
+    }
+    if (roundState.phase === "bid") {
+      return `Bidding is live. Highest bid ${roundState.bidding.highestBid} by ${
+        bidLeader?.name ?? "unknown"
+      }. Waiting on ${currentPlayer?.name ?? "player"}.`;
+    }
+    if (roundState.phase === "reveal") {
+      return `${revealBidder?.name ?? "Bidder"} is revealing ${
+        roundState.reveal.revealedCount
+      }/${roundState.reveal.target}. Reveal your own pile first.`;
+    }
+    return roundState.result?.message ?? "Round resolved.";
+  }, [
+    bidLeader?.name,
+    currentPlayer?.name,
+    revealBidder?.name,
+    roundState,
+    state,
+  ]);
+
+  const trimmedName = playerName.trim();
+  const normalizedRoom = normalizeRoomCode(roomCodeInput);
+  const canSubmitName = trimmedName.length > 0;
+  const canJoinRoom = canSubmitName && normalizedRoom.length === 4;
+
+  const handleCreateRoom = () => {
+    if (!canSubmitName) {
+      return;
+    }
+    dispatch({ type: "INIT_ROOM", roomId: "" });
+    dispatch({
+      type: "ADD_PLAYER",
+      name: trimmedName,
+      avatarId,
+    });
+    setPlayerName("");
+    setRoomCodeInput("");
+    setView("lobby");
+  };
+
+  const handleJoinRoom = () => {
+    if (!canJoinRoom) {
+      return;
+    }
+    dispatch({ type: "INIT_ROOM", roomId: normalizedRoom });
+    dispatch({
+      type: "ADD_PLAYER",
+      name: trimmedName,
+      avatarId,
+    });
+    setPlayerName("");
+    setView("lobby");
+  };
+
+  const handleAddPlayer = () => {
+    if (!canSubmitName) {
+      return;
+    }
+    dispatch({
+      type: "ADD_PLAYER",
+      name: trimmedName,
+      avatarId,
+    });
+    setPlayerName("");
+  };
+
+  const handleLeaveGame = () => {
+    dispatch({ type: "INIT_ROOM", roomId: "" });
+    setView("entry");
+    setPlayerName("");
+    setRoomCodeInput("");
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div className="relative min-h-screen overflow-hidden px-6 py-10 lg:px-12">
+      <div className="pointer-events-none absolute -top-32 left-1/2 h-72 w-[520px] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,rgba(216,178,110,0.35),transparent_70%)] blur-3xl" />
+      <div className="pointer-events-none absolute bottom-0 right-0 h-96 w-96 translate-x-1/3 translate-y-1/3 rounded-full bg-[radial-gradient(circle,rgba(182,58,72,0.25),transparent_70%)] blur-3xl" />
+
+      <header className="relative z-10 mb-10 flex flex-col gap-4 text-center lg:text-left">
+        <p className="text-xs uppercase tracking-[0.4em] text-[var(--accent-2)]">
+          Bluff - Bid - Reveal
+        </p>
+        <h1 className="font-display text-4xl tracking-tight text-[var(--ink)] sm:text-5xl">
+          Skull & Roses
+        </h1>
+        <p className="max-w-2xl text-sm text-[var(--muted)] sm:text-base">
+          A cinematic table for the classic Skull (Skulls and Roses). Gather up
+          to eight players, place your cards, and try to reveal without hitting
+          a skull.
+        </p>
+      </header>
+
+      {state.phase === "lobby" && view === "entry" && (
+        <section className="relative z-10 grid gap-6">
+          <div className="panel animate-float rounded-3xl p-8">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.4em] text-[var(--muted)]">
+                  Choose Identity
+                </p>
+                <p className="font-display text-2xl text-[var(--ink)]">
+                  Pick a name and avatar
+                </p>
+              </div>
+              <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-[var(--muted)]">
+                Room codes are 4 characters
+              </div>
+            </div>
+
+            <div className="mt-6 grid gap-4">
+              <input
+                value={playerName}
+                onChange={(event) => setPlayerName(event.target.value)}
+                placeholder="Your name"
+                className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+              />
+              <AvatarPicker value={avatarId} onChange={setAvatarId} />
+            </div>
+          </div>
+
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="panel animate-float rounded-3xl p-8">
+              <h2 className="font-display text-2xl text-[var(--ink)]">
+                Create Room
+              </h2>
+              <p className="mt-3 text-sm text-[var(--muted)]">
+                Generate a fresh room code and become the host.
+              </p>
+              <button
+                onClick={handleCreateRoom}
+                disabled={!canSubmitName}
+                className="mt-6 rounded-full bg-[var(--accent-2)] px-6 py-3 text-sm font-semibold text-black shadow-lg shadow-black/30 transition hover:scale-[1.01] disabled:opacity-50"
+              >
+                Create Room
+              </button>
+            </div>
+
+            <div className="panel animate-float rounded-3xl p-8">
+              <h2 className="font-display text-2xl text-[var(--ink)]">
+                Join Room
+              </h2>
+              <p className="mt-3 text-sm text-[var(--muted)]">
+                Enter a 4-character code to join a table.
+              </p>
+              <input
+                value={roomCodeInput}
+                onChange={(event) =>
+                  setRoomCodeInput(normalizeRoomCode(event.target.value))
+                }
+                placeholder="ABCD"
+                maxLength={4}
+                className="mt-4 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm uppercase tracking-[0.3em] text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+              />
+              <button
+                onClick={handleJoinRoom}
+                disabled={!canJoinRoom}
+                className="mt-4 rounded-full border border-white/10 bg-white/10 px-6 py-3 text-sm font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-white/20 disabled:opacity-50"
+              >
+                Join Room
+              </button>
+            </div>
+          </div>
+
+          <p className="text-center text-xs text-[var(--muted)]">
+            Room join flow is ready. Live multiplayer sync is coming next.
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+        </section>
+      )}
+
+      {state.phase === "lobby" && view === "lobby" && (
+        <section className="relative z-10 grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+          <div className="panel animate-float rounded-3xl p-8">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.4em] text-[var(--muted)]">
+                  Room Code
+                </p>
+                <p className="font-display text-3xl text-[var(--accent-2)]">
+                  {state.roomId}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-[var(--muted)]">
+                  Local room for now - Online sync comes next
+                </div>
+                <button
+                  onClick={handleLeaveGame}
+                  className="rounded-full border border-white/10 px-4 py-2 text-xs uppercase tracking-[0.2em] text-white/70 hover:text-white"
+                >
+                  Leave Game
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-8 grid gap-3">
+              <label className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                Add Player
+              </label>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <input
+                  value={playerName}
+                  onChange={(event) => setPlayerName(event.target.value)}
+                  placeholder="Name"
+                  className="flex-1 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                />
+                <button
+                  onClick={handleAddPlayer}
+                  disabled={
+                    !canSubmitName || state.players.length >= MAX_PLAYERS
+                  }
+                  className="rounded-2xl bg-[var(--accent)] px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-black/30 transition hover:scale-[1.01] disabled:opacity-50"
+                >
+                  Add
+                </button>
+              </div>
+              <AvatarPicker value={avatarId} onChange={setAvatarId} compact />
+              <p className="text-xs text-[var(--muted)]">
+                Minimum {MIN_PLAYERS} players, maximum {MAX_PLAYERS}.
+              </p>
+            </div>
+
+            <div className="mt-8 grid gap-3">
+              <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                Players
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {state.players.map((player) => (
+                  <div
+                    key={player.id}
+                    className="panel-soft flex items-center justify-between rounded-2xl px-4 py-3"
+                  >
+                    <div className="flex items-center gap-3">
+                      <AvatarBadge
+                        avatarId={player.avatarId}
+                        ringColor={player.color}
+                        size="sm"
+                      />
+                      <span className="text-sm font-semibold">
+                        {player.name}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() =>
+                        dispatch({ type: "REMOVE_PLAYER", id: player.id })
+                      }
+                      className="text-xs uppercase tracking-[0.2em] text-[var(--muted)] hover:text-white"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="mt-8 flex flex-wrap items-center gap-4">
+              <button
+                onClick={() => dispatch({ type: "START_GAME" })}
+                disabled={state.players.length < MIN_PLAYERS}
+                className="rounded-full bg-[var(--accent-2)] px-8 py-3 text-sm font-semibold text-black shadow-lg shadow-black/30 transition hover:scale-[1.01] disabled:opacity-50"
+              >
+                Start Game
+              </button>
+              <span className="text-xs text-[var(--muted)]">
+                Ready when you are. The table shuffles fresh hands.
+              </span>
+            </div>
+          </div>
+
+          <div className="panel animate-float rounded-3xl p-8">
+            <h2 className="font-display text-2xl text-[var(--ink)]">
+              How a Round Plays
+            </h2>
+            <div className="mt-6 grid gap-4 text-sm text-[var(--muted)]">
+              <div className="flex items-start gap-3">
+                <RoseIcon className="h-6 w-6 text-[var(--accent-2)]" />
+                <p>
+                  Everyone places a card face down. On your turn, place another
+                  or start the bidding.
+                </p>
+              </div>
+              <div className="flex items-start gap-3">
+                <SkullIcon className="h-6 w-6 text-[var(--accent)]" />
+                <p>
+                  Bidders raise the number of cards they can reveal. The highest
+                  bid must reveal without hitting a skull.
+                </p>
+              </div>
+              <div className="flex items-start gap-3">
+                <div className="h-6 w-6 rounded-full border border-white/20" />
+                <p>
+                  Succeed twice to win. Reveal a skull and you lose a random card.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {state.phase !== "lobby" && (
+        <section className="relative z-10 grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)_320px]">
+          <aside className="panel animate-float rounded-3xl p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                  Round {state.round}
+                </p>
+                <p className="font-display text-2xl text-[var(--ink)]">
+                  {phaseLabel}
+                </p>
+              </div>
+              <div className="rounded-full border border-white/10 px-3 py-1 text-xs text-[var(--muted)]">
+                {getGameSummary(state)}
+              </div>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              <div className="panel-soft rounded-2xl px-4 py-3 text-sm text-[var(--muted)]">
+                {currentPlayer ? (
+                  <>
+                    Turn:{" "}
+                    <span className="font-semibold text-white">
+                      {currentPlayer.name}
+                    </span>
+                  </>
+                ) : (
+                  "Waiting for players..."
+                )}
+              </div>
+
+              {activePlayer && (
+                <div className="panel-soft rounded-2xl px-4 py-3 text-sm text-[var(--muted)]">
+                  You are controlling{" "}
+                  <span className="font-semibold text-white">
+                    {activePlayer.name}
+                  </span>
+                  . {canAct ? "Your move." : "Waiting for turn."}
+                </div>
+              )}
+            </div>
+
+            {state.phase === "gameEnd" && (
+              <div className="mt-6 rounded-2xl border border-[var(--accent-2)]/30 bg-black/30 p-4 text-sm text-[var(--muted)]">
+                <p className="font-display text-lg text-[var(--accent-2)]">
+                  {state.winnerId
+                    ? `${state.players.find((p) => p.id === state.winnerId)?.name ?? "Winner"} wins the table.`
+                    : "Last player standing."}
+                </p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    onClick={() => dispatch({ type: "START_GAME" })}
+                    className="rounded-full bg-[var(--accent-2)] px-5 py-2 text-xs font-semibold text-black"
+                  >
+                    Restart
+                  </button>
+                  <button
+                    onClick={() => dispatch({ type: "RESET_GAME" })}
+                    className="rounded-full border border-white/10 px-5 py-2 text-xs font-semibold text-white/80"
+                  >
+                    Back to Lobby
+                  </button>
+                  <button
+                    onClick={handleLeaveGame}
+                    className="rounded-full border border-white/10 px-5 py-2 text-xs font-semibold text-white/80"
+                  >
+                    Leave Game
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {state.phase === "play" && roundState && (
+              <div className="mt-6 space-y-4">
+                {roundState.phase === "place" && activePlayer && (
+                  <ActionCard title="Placement">
+                    <div className="flex flex-wrap gap-2">
+                      <ActionButton
+                        disabled={!canAct || !hasCard(activePlayer, "rose")}
+                        onClick={() =>
+                          dispatch({
+                            type: "PLACE_CARD",
+                            playerId: activePlayer.id,
+                            card: "rose",
+                          })
+                        }
+                      >
+                        Place Rose
+                      </ActionButton>
+                      <ActionButton
+                        disabled={!canAct || !hasCard(activePlayer, "skull")}
+                        onClick={() =>
+                          dispatch({
+                            type: "PLACE_CARD",
+                            playerId: activePlayer.id,
+                            card: "skull",
+                          })
+                        }
+                      >
+                        Place Skull
+                      </ActionButton>
+                    </div>
+
+                    <div className="mt-4 grid gap-3">
+                      <label className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
+                        Start Bid
+                      </label>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="number"
+                          min={1}
+                          max={Math.max(1, totalPlaced)}
+                          value={bidAmount}
+                          onChange={(event) =>
+                            setBidAmount(Number(event.target.value))
+                          }
+                          className="w-20 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white"
+                        />
+                        <ActionButton
+                          disabled={!canAct || !canBid(activePlayer)}
+                          onClick={() =>
+                            dispatch({
+                              type: "START_BID",
+                              playerId: activePlayer.id,
+                              amount: clamp(
+                                bidAmount,
+                                1,
+                                totalPlaced > 0 ? totalPlaced : 1
+                              ),
+                            })
+                          }
+                        >
+                          Bid {bidAmount}
+                        </ActionButton>
+                      </div>
+                    </div>
+                  </ActionCard>
+                )}
+
+                {roundState.phase === "bid" && activePlayer && (
+                  <ActionCard title="Bidding">
+                    <p className="text-xs text-[var(--muted)]">
+                      Highest bid:{" "}
+                      <span className="font-semibold text-white">
+                        {roundState.bidding.highestBid}
+                      </span>{" "}
+                      {bidLeader ? `by ${bidLeader.name}` : ""}
+                    </p>
+                    <div className="mt-4 flex flex-wrap items-center gap-2">
+                      <input
+                        type="number"
+                        min={minBid}
+                        max={maxBid}
+                        value={bidAmount}
+                        onChange={(event) =>
+                          setBidAmount(Number(event.target.value))
+                        }
+                        className="w-20 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white"
+                      />
+                      <ActionButton
+                        disabled={!canRaise}
+                        onClick={() =>
+                          dispatch({
+                            type: "RAISE_BID",
+                            playerId: activePlayer.id,
+                            amount: clamp(bidAmount, minBid, maxBid),
+                          })
+                        }
+                      >
+                        Raise
+                      </ActionButton>
+                      <ActionButton
+                        disabled={!canAct}
+                        onClick={() =>
+                          dispatch({
+                            type: "PASS_BID",
+                            playerId: activePlayer.id,
+                          })
+                        }
+                      >
+                        Pass
+                      </ActionButton>
+                    </div>
+                  </ActionCard>
+                )}
+
+                {roundState.phase === "reveal" && (
+                  <ActionCard title="Reveal">
+                    <p className="text-sm text-[var(--muted)]">
+                      {revealBidder
+                        ? `${revealBidder.name} must reveal ${roundState.reveal.target} cards.`
+                        : "Reveal in progress."}
+                    </p>
+                    <p className="text-xs text-[var(--muted)]">
+                      Revealed so far: {roundState.reveal.revealedCount}
+                    </p>
+                    <p className="mt-2 text-xs text-[var(--muted)]">
+                      {activePlayer?.id === roundState.reveal.bidderId
+                        ? "Click your own pile first, then choose other piles to flip."
+                        : "Waiting for the bidder to reveal."}
+                    </p>
+                  </ActionCard>
+                )}
+
+                {roundState.phase === "roundEnd" && (
+                  <ActionCard title="Round Result">
+                    <p className="text-sm text-[var(--muted)]">
+                      {roundState.result?.message ??
+                        "The round has resolved."}
+                    </p>
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <ActionButton
+                        onClick={() => dispatch({ type: "NEXT_ROUND" })}
+                      >
+                        Next Round
+                      </ActionButton>
+                      <ActionButton
+                        onClick={() => dispatch({ type: "RESET_GAME" })}
+                      >
+                        Back to Lobby
+                      </ActionButton>
+                    </div>
+                  </ActionCard>
+                )}
+              </div>
+            )}
+
+            {activePlayer && state.phase === "play" && (
+              <div className="mt-6">
+                <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                  Your Hand
+                </p>
+                <p className="mt-2 text-xs text-[var(--muted)]">
+                  Drag a card to your pile or click to play it.
+                </p>
+                <div className="mt-3 -mx-2 flex items-center gap-3 overflow-x-auto px-2 pb-2 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0">
+                  {activePlayer.hand.map((card, index) => (
+                    <HandCard
+                      key={`${card}-${index}`}
+                      card={card}
+                      index={index}
+                      total={activePlayer.hand.length}
+                      disabled={!canAct || roundState?.phase !== "place"}
+                      onPlay={() =>
+                        dispatch({
+                          type: "PLACE_CARD",
+                          playerId: activePlayer.id,
+                          card,
+                        })
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="mt-6">
+              <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                Table Log
+              </p>
+              <div className="mt-3 space-y-2 text-xs text-[var(--muted)]">
+                {state.log
+                  .slice()
+                  .reverse()
+                  .map((entry, index) => (
+                    <p key={`${entry}-${index}`}>{entry}</p>
+                  ))}
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <button
+                onClick={handleLeaveGame}
+                className="w-full rounded-2xl border border-white/10 px-4 py-3 text-xs font-semibold uppercase tracking-[0.2em] text-white/70 hover:text-white"
+              >
+                Leave Game
+              </button>
+            </div>
+          </aside>
+
+          <main className="panel animate-float rounded-3xl p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                  The Table
+                </p>
+                <p className="font-display text-2xl text-[var(--ink)]">
+                  Place, bid, reveal
+                </p>
+              </div>
+              <div className="text-xs text-[var(--muted)]">
+                Total cards down: {totalPlaced}
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-[var(--muted)]">
+              <span className="font-semibold text-white">Status:</span>{" "}
+              {statusMessage}
+            </div>
+
+            <RoundTable
+              players={state.players}
+              roundState={roundState}
+              activePlayerId={activePlayer?.id ?? null}
+              canPlace={canPlace}
+              canReveal={
+                roundState?.phase === "reveal" &&
+                roundState.reveal.bidderId === activePlayer?.id
+              }
+              onReveal={(targetPlayerId) =>
+                dispatch({
+                  type: "REVEAL_CARD",
+                  playerId: roundState?.reveal.bidderId ?? "",
+                  targetPlayerId,
+                })
+              }
+              onDropCard={(card) => {
+                if (!activePlayer || !canPlace) {
+                  return;
+                }
+                dispatch({
+                  type: "PLACE_CARD",
+                  playerId: activePlayer.id,
+                  card,
+                });
+              }}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+          </main>
+
+          <aside className="panel animate-float rounded-3xl p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                  Players
+                </p>
+                <p className="font-display text-2xl text-[var(--ink)]">
+                  Scoreboard
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 space-y-3">
+              {state.players.map((player) => (
+                <div
+                  key={player.id}
+                  className="panel-soft rounded-2xl px-4 py-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <AvatarBadge
+                        avatarId={player.avatarId}
+                        ringColor={player.color}
+                        size="sm"
+                      />
+                      <div>
+                        <p className="text-sm font-semibold text-white">
+                          {player.name}
+                        </p>
+                        <p className="text-xs text-[var(--muted)]">
+                          {player.eliminated
+                            ? "Eliminated"
+                            : `${player.hand.length} cards in hand`}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <ScorePip filled={player.score >= 1} />
+                      <ScorePip filled={player.score >= 2} />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-6">
+              <label className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                Control As
+              </label>
+              <select
+                value={state.activePlayerId ?? ""}
+                onChange={(event) =>
+                  dispatch({
+                    type: "SET_ACTIVE_PLAYER",
+                    id: event.target.value,
+                  })
+                }
+                className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white"
+              >
+                {getActivePlayerOptions(state.players).map((player) => (
+                  <option key={player.id} value={player.id}>
+                    {player.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </aside>
+        </section>
+      )}
     </div>
+  );
+}
+
+function ActionCard({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="panel-soft rounded-2xl px-4 py-4">
+      <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+        {title}
+      </p>
+      <div className="mt-3 space-y-3 text-sm">{children}</div>
+    </div>
+  );
+}
+
+function ActionButton({
+  children,
+  onClick,
+  disabled,
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white transition hover:bg-white/20 disabled:opacity-50"
+    >
+      {children}
+    </button>
+  );
+}
+
+function AvatarBadge({
+  avatarId,
+  size = "md",
+  ringColor,
+}: {
+  avatarId: string;
+  size?: "xs" | "sm" | "md";
+  ringColor?: string;
+}) {
+  const avatar = getAvatarById(avatarId);
+  const sizeClass =
+    size === "xs"
+      ? "h-7 w-7 text-[10px]"
+      : size === "sm"
+      ? "h-9 w-9 text-xs"
+      : "h-11 w-11 text-sm";
+  return (
+    <div
+      className={`flex items-center justify-center rounded-full border border-white/10 text-base ${sizeClass}`}
+      style={{
+        backgroundColor: avatar.bg,
+        color: avatar.fg,
+        boxShadow: ringColor ? `0 0 0 2px ${ringColor}` : undefined,
+      }}
+      title={avatar.label}
+    >
+      {avatar.emoji}
+    </div>
+  );
+}
+
+function AvatarPicker({
+  value,
+  onChange,
+  compact = false,
+}: {
+  value: string;
+  onChange: (id: string) => void;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      className={`grid gap-2 ${
+        compact ? "grid-cols-4" : "grid-cols-2 sm:grid-cols-4"
+      }`}
+    >
+      {AVATARS.map((avatar) => {
+        const isSelected = avatar.id === value;
+        return (
+          <button
+            key={avatar.id}
+            onClick={() => onChange(avatar.id)}
+            className={`flex flex-col items-center gap-2 rounded-2xl border px-3 py-3 text-left transition ${
+              isSelected
+                ? "border-[var(--accent-2)]/60 bg-white/10"
+                : "border-white/10 bg-black/20 hover:bg-white/10"
+            }`}
+            type="button"
+          >
+            <AvatarBadge avatarId={avatar.id} />
+            {!compact && (
+              <span className="text-[10px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                {avatar.label}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function RoundTable({
+  players,
+  roundState,
+  activePlayerId,
+  canPlace,
+  canReveal,
+  onReveal,
+  onDropCard,
+}: {
+  players: Player[];
+  roundState: RoundState | null;
+  activePlayerId: string | null;
+  canPlace: boolean;
+  canReveal: boolean;
+  onReveal: (targetPlayerId: string) => void;
+  onDropCard: (card: CardType) => void;
+}) {
+  const radius = Math.min(220, 150 + Math.max(0, players.length - 4) * 18);
+  const positions = useMemo(
+    () =>
+      players.map((_, index) => {
+        const angle = (Math.PI * 2 * index) / players.length - Math.PI / 2;
+        return {
+          x: Math.cos(angle) * radius,
+          y: Math.sin(angle) * radius,
+        };
+      }),
+    [players, radius]
+  );
+  const bidderId = roundState?.reveal.bidderId ?? null;
+  const bidderHasPile =
+    bidderId !== null
+      ? players.find((player) => player.id === bidderId)?.pile.length ?? 0
+      : 0;
+
+  return (
+    <div className="relative mx-auto mt-6 aspect-square w-full max-w-[420px] sm:max-w-[520px] lg:max-w-[600px]">
+      <div className="absolute inset-0 scale-90 origin-center sm:scale-100">
+        <div className="relative h-full w-full">
+          <div className="absolute inset-[18%] rounded-full border border-white/10 bg-black/25 shadow-[inset_0_0_80px_rgba(0,0,0,0.6)]" />
+          <div className="absolute inset-[26%] rounded-full border border-white/5 bg-black/30" />
+
+          {players.map((player, index) => {
+            const position = positions[index];
+            const isCurrent = player.id === roundState?.currentPlayerId;
+            const isBidLeader =
+              roundState?.phase === "bid" &&
+              roundState.bidding.highestBidderId === player.id;
+            const isRevealer =
+              roundState?.phase === "reveal" &&
+              roundState.reveal.bidderId === player.id;
+            const dropEnabled =
+              roundState?.phase === "place" &&
+              canPlace &&
+              activePlayerId === player.id;
+            const revealEnabled =
+              canReveal && (!bidderHasPile || player.id === bidderId);
+
+            return (
+              <PlayerSeat
+                key={player.id}
+                player={player}
+                position={position}
+                highlight={isCurrent}
+                bidAmount={
+                  isBidLeader ? roundState?.bidding.highestBid ?? 0 : null
+                }
+                isRevealer={isRevealer}
+                canReveal={revealEnabled}
+                onReveal={onReveal}
+                dropEnabled={dropEnabled}
+                onDropCard={onDropCard}
+              />
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlayerSeat({
+  player,
+  position,
+  highlight,
+  bidAmount,
+  isRevealer,
+  canReveal,
+  onReveal,
+  dropEnabled,
+  onDropCard,
+}: {
+  player: Player;
+  position: { x: number; y: number };
+  highlight?: boolean;
+  bidAmount: number | null;
+  isRevealer?: boolean;
+  canReveal: boolean;
+  onReveal: (targetPlayerId: string) => void;
+  dropEnabled: boolean;
+  onDropCard: (card: CardType) => void;
+}) {
+  return (
+    <div
+      className="absolute w-32 -translate-x-1/2 -translate-y-1/2 sm:w-36 lg:w-40"
+      style={{
+        left: "50%",
+        top: "50%",
+        transform: `translate(-50%, -50%) translate(${position.x}px, ${position.y}px)`,
+      }}
+    >
+      <div
+        className={`flex flex-col items-center gap-2 rounded-2xl border border-white/10 bg-black/35 px-3 py-3 text-center ${
+          highlight ? "glow-ring" : ""
+        }`}
+      >
+        {(bidAmount || isRevealer) && (
+          <div className="flex flex-col items-center gap-1">
+            {bidAmount ? (
+              <span className="rounded-full bg-[var(--accent-2)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-black">
+                Bid {bidAmount}
+              </span>
+            ) : null}
+            {isRevealer ? (
+              <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-white/80">
+                Revealing
+              </span>
+            ) : null}
+          </div>
+        )}
+
+        <AvatarBadge avatarId={player.avatarId} ringColor={player.color} />
+        <p className="text-xs font-semibold text-white">{player.name}</p>
+
+        <button
+          type="button"
+          onClick={() => {
+            if (canReveal) {
+              onReveal(player.id);
+            }
+          }}
+          onDragOver={(event) => {
+            if (dropEnabled) {
+              event.preventDefault();
+            }
+          }}
+          onDrop={(event) => {
+            if (!dropEnabled) {
+              return;
+            }
+            event.preventDefault();
+            const payload = event.dataTransfer.getData("text/plain");
+            if (payload === "rose" || payload === "skull") {
+              onDropCard(payload);
+            }
+          }}
+          disabled={!canReveal && !dropEnabled}
+          className={`group relative flex flex-col items-center gap-2 ${
+            dropEnabled || canReveal ? "cursor-pointer" : "cursor-default"
+          }`}
+        >
+          <div className="stack scale-75">
+            {player.pile.length === 0 ? (
+              <span className="stack-card stack-card-empty" />
+            ) : (
+              Array.from({ length: Math.min(player.pile.length, 4) }).map(
+                (_, index) => <span key={index} className="stack-card" />
+              )
+            )}
+          </div>
+          <span className="text-[10px] uppercase tracking-[0.2em] text-[var(--muted)]">
+            {player.pile.length} down
+          </span>
+          {dropEnabled ? (
+            <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-[var(--accent-2)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-black opacity-0 transition group-hover:opacity-100">
+              Drop card
+            </span>
+          ) : null}
+          {!dropEnabled && canReveal && player.pile.length > 0 ? (
+            <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-[var(--accent-2)] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-black opacity-0 transition group-hover:opacity-100">
+              Reveal
+            </span>
+          ) : null}
+        </button>
+
+        <div className="flex flex-wrap justify-center gap-2">
+          {player.revealed.length === 0 ? (
+            <span className="text-[10px] text-[var(--muted)]">No reveals</span>
+          ) : (
+            player.revealed.map((card, index) => (
+              <FlipCard
+                key={`${player.id}-${card}-${index}`}
+                card={card}
+                revealed
+                className="scale-75"
+              />
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HandCard({
+  card,
+  index,
+  total,
+  disabled,
+  onPlay,
+}: {
+  card: CardType;
+  index: number;
+  total: number;
+  disabled?: boolean;
+  onPlay: () => void;
+}) {
+  const center = (total - 1) / 2;
+  const rotation = (index - center) * 6;
+  const lift = Math.abs(index - center) * 2;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      draggable={!disabled}
+      onDragStart={(event) => {
+        if (disabled) {
+          event.preventDefault();
+          return;
+        }
+        event.dataTransfer.setData("text/plain", card);
+        event.dataTransfer.effectAllowed = "move";
+      }}
+      onClick={() => {
+        if (!disabled) {
+          onPlay();
+        }
+      }}
+      className="group relative shrink-0 rounded-2xl border border-white/10 bg-black/30 px-3 py-2 transition-shadow hover:shadow-lg disabled:opacity-50"
+      style={{
+        transform: `rotate(${rotation}deg) translateY(${lift * -1}px)`,
+      }}
+    >
+      <FlipCard card={card} revealed className="scale-90" />
+      <span className="mt-2 block text-[10px] uppercase tracking-[0.3em] text-[var(--muted)]">
+        {card}
+      </span>
+    </button>
   );
 }
