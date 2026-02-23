@@ -704,7 +704,8 @@ export const gameReducer = (state: GameState, action: Action): GameState => {
       if (state.phase !== "play" || !state.roundState) {
         return state;
       }
-      if (state.roundState.phase !== "roundEnd") {
+      const roundState = state.roundState;
+      if (roundState.phase !== "roundEnd") {
         return state;
       }
       let players = collectRoundCards(state.players);
@@ -722,12 +723,12 @@ export const gameReducer = (state: GameState, action: Action): GameState => {
         };
       }
       const fallbackLead = activePlayers[0].id;
+      const bidderId = roundState.result?.bidderId ?? null;
+      const bidderStillIn = bidderId
+        ? !players.find((player) => player.id === bidderId)?.eliminated
+        : false;
       const leadPlayerId =
-        state.roundState.result?.bidderId &&
-        !players.find((player) => player.id === state.roundState.result?.bidderId)
-          ?.eliminated
-          ? state.roundState.result.bidderId
-          : fallbackLead;
+        bidderId && bidderStillIn ? bidderId : fallbackLead;
       const leadName =
         players.find((player) => player.id === leadPlayerId)?.name ?? "Lead";
       return {
