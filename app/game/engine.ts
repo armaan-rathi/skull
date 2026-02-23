@@ -162,19 +162,23 @@ const getActivePlayers = (players: Player[]) =>
 const getTotalPlacedCards = (players: Player[]) =>
   players.reduce((total, player) => total + player.pile.length, 0);
 
-const collectRoundCards = (players: Player[]) =>
-  players.map((player) => ({
-    ...player,
-    hand: [...player.hand, ...player.pile, ...player.revealed],
-    pile: [],
-    revealed: [],
-  }));
+const collectRoundCards = (players: Player[]): Player[] =>
+  players.map(
+    (player): Player => ({
+      ...player,
+      hand: [...player.hand, ...player.pile, ...player.revealed],
+      pile: [] as CardType[],
+      revealed: [] as CardType[],
+    })
+  );
 
-const applyEliminations = (players: Player[]) =>
-  players.map((player) => ({
-    ...player,
-    eliminated: player.eliminated || player.hand.length === 0,
-  }));
+const applyEliminations = (players: Player[]): Player[] =>
+  players.map(
+    (player): Player => ({
+      ...player,
+      eliminated: player.eliminated || player.hand.length === 0,
+    })
+  );
 
 const createRoundState = (
   players: Player[],
