@@ -824,12 +824,11 @@ export default function Home() {
                 </div>
               )}
 
-              <div className="mt-6 flex flex-1 items-center justify-center">
+              <div className="mt-3 flex flex-1 items-center justify-center">
                 <RoundTable
                   players={state.players}
                   roundState={roundState}
                   activePlayerId={activePlayer?.id ?? null}
-                  onlinePlayerIds={onlinePlayerIds}
                   canPlace={canPlace}
                   canReveal={
                     roundState?.phase === "reveal" &&
@@ -1270,7 +1269,6 @@ function RoundTable({
   players,
   roundState,
   activePlayerId,
-  onlinePlayerIds,
   canPlace,
   canReveal,
   onReveal,
@@ -1279,7 +1277,6 @@ function RoundTable({
   players: Player[];
   roundState: RoundState | null;
   activePlayerId: string | null;
-  onlinePlayerIds: Set<string>;
   canPlace: boolean;
   canReveal: boolean;
   onReveal: (targetPlayerId: string) => void;
@@ -1304,7 +1301,7 @@ function RoundTable({
 
   const radius = Math.min(
     220,
-    150 + Math.max(0, orderedPlayers.length - 4) * 18
+    130 + Math.max(0, orderedPlayers.length - 4) * 18
   );
   const positions = useMemo(
     () =>
@@ -1326,7 +1323,7 @@ function RoundTable({
 
   return (
     <div className="relative mx-auto aspect-square w-full max-w-[360px] sm:max-w-[440px] lg:max-w-[520px]">
-      <div className="absolute inset-0 scale-90 origin-center sm:scale-100">
+      <div className="absolute inset-0 scale-95 origin-center sm:scale-100">
         <div className="relative h-full w-full">
           <div className="absolute inset-[18%] rounded-full border border-white/10 bg-black/25 shadow-[inset_0_0_80px_rgba(0,0,0,0.6)]" />
           <div className="absolute inset-[26%] rounded-full border border-white/5 bg-black/30" />
@@ -1353,7 +1350,6 @@ function RoundTable({
                 player={player}
                 position={position}
                 highlight={isCurrent}
-                isOnline={onlinePlayerIds.has(player.id)}
                 bidAmount={
                   isBidLeader ? roundState?.bidding.highestBid ?? 0 : null
                 }
@@ -1375,7 +1371,6 @@ function PlayerSeat({
   player,
   position,
   highlight,
-  isOnline,
   bidAmount,
   isRevealer,
   canReveal,
@@ -1386,7 +1381,6 @@ function PlayerSeat({
   player: Player;
   position: { x: number; y: number };
   highlight?: boolean;
-  isOnline: boolean;
   bidAmount: number | null;
   isRevealer?: boolean;
   canReveal: boolean;
@@ -1406,7 +1400,7 @@ function PlayerSeat({
       <div
         className={`flex flex-col items-center gap-2 rounded-2xl border border-white/10 bg-black/35 px-3 py-3 text-center ${
           highlight ? "glow-ring" : ""
-        } ${!isOnline ? "opacity-70" : ""}`}
+        }`}
       >
         {(bidAmount || isRevealer) && (
           <div className="flex flex-col items-center gap-1">
@@ -1424,15 +1418,7 @@ function PlayerSeat({
         )}
 
         <AvatarBadge avatarId={player.avatarId} ringColor={player.color} />
-        <div className="flex items-center gap-2">
-          <p className="text-xs font-semibold text-white">{player.name}</p>
-          <span
-            className={`h-2 w-2 rounded-full ${
-              isOnline ? "bg-[var(--success)]" : "bg-white/20"
-            }`}
-            title={isOnline ? "Online" : "Offline"}
-          />
-        </div>
+        <p className="text-xs font-semibold text-white">{player.name}</p>
 
         <button
           type="button"
