@@ -45,6 +45,10 @@ export default function Home() {
   const [roomCodeInput, setRoomCodeInput] = useState("");
   const [bidAmount, setBidAmount] = useState(1);
   const [isCoarsePointer, setIsCoarsePointer] = useState(false);
+  const [selectedCard, setSelectedCard] = useState<{
+    card: CardType;
+    index: number;
+  } | null>(null);
 
   const supabase = useMemo(() => getSupabaseClient(), []);
   const onlineEnabled = Boolean(supabase);
@@ -231,6 +235,19 @@ export default function Home() {
   const currentPlayer = state.players.find(
     (player) => player.id === roundState?.currentPlayerId
   );
+
+  useEffect(() => {
+    if (!activePlayer || !roundState || roundState.phase !== "place") {
+      setSelectedCard(null);
+      return;
+    }
+    if (selectedCard) {
+      const current = activePlayer.hand[selectedCard.index];
+      if (current !== selectedCard.card) {
+        setSelectedCard(null);
+      }
+    }
+  }, [activePlayer?.hand, roundState?.phase, selectedCard]);
 
   const totalPlaced = useMemo(
     () => getMaxBid(state.players),
@@ -847,6 +864,8 @@ export default function Home() {
                   players={state.players}
                   roundState={roundState}
                   activePlayerId={activePlayer?.id ?? null}
+                  selectedCard={selectedCard?.card ?? null}
+                  onClearSelectedCard={() => setSelectedCard(null)}
                   canPlace={canPlace}
                   canReveal={
                     roundState?.phase === "reveal" &&
@@ -881,8 +900,15 @@ export default function Home() {
                       Your Hand
                     </p>
                     <p className="mt-1 text-xs text-[var(--muted)]">
-                      Drag a card to your pile or click to play it.
+                      {isCoarsePointer
+                        ? "Tap a card, then tap your pile to play it."
+                        : "Drag a card to your pile or click to play it."}
                     </p>
+                    {isCoarsePointer && selectedCard && (
+                      <p className="mt-1 text-xs text-[var(--accent-2)]">
+                        Selected: {selectedCard.card}. Tap your pile to play.
+                      </p>
+                    )}
                   </div>
                   <div className="text-xs text-[var(--muted)]">
                     {activePlayer.hand.length} cards
@@ -897,6 +923,17 @@ export default function Home() {
                       total={activePlayer.hand.length}
                       disabled={!canAct || roundState?.phase !== "place"}
                       disableDrag={isCoarsePointer}
+                      selected={
+                        selectedCard?.index === index &&
+                        selectedCard.card === card
+                      }
+                      onSelect={() =>
+                        setSelectedCard((prev) =>
+                          prev && prev.index === index && prev.card === card
+                            ? null
+                            : { card, index }
+                        )
+                      }
                       onPlay={() =>
                         dispatchAction({
                           type: "PLACE_CARD",
@@ -910,11 +947,14 @@ export default function Home() {
                 <div className="mt-3 flex flex-col gap-2 sm:hidden">
                   <button
                     onClick={() =>
-                      dispatchAction({
-                        type: "PLACE_CARD",
-                        playerId: activePlayer.id,
-                        card: "rose",
-                      })
+                      {
+                        dispatchAction({
+                          type: "PLACE_CARD",
+                          playerId: activePlayer.id,
+                          card: "rose",
+                        });
+                        setSelectedCard(null);
+                      }
                     }
                     disabled={
                       !canAct ||
@@ -927,11 +967,14 @@ export default function Home() {
                   </button>
                   <button
                     onClick={() =>
-                      dispatchAction({
-                        type: "PLACE_CARD",
-                        playerId: activePlayer.id,
-                        card: "skull",
-                      })
+                      {
+                        dispatchAction({
+                          type: "PLACE_CARD",
+                          playerId: activePlayer.id,
+                          card: "skull",
+                        });
+                        setSelectedCard(null);
+                      }
                     }
                     disabled={
                       !canAct ||
@@ -1324,6 +1367,8 @@ function RoundTable({
   players,
   roundState,
   activePlayerId,
+  selectedCard,
+  onClearSelectedCard,
   canPlace,
   canReveal,
   onReveal,
@@ -1332,6 +1377,8 @@ function RoundTable({
   players: Player[];
   roundState: RoundState | null;
   activePlayerId: string | null;
+  selectedCard: CardType | null;
+  onClearSelectedCard: () => void;
   canPlace: boolean;
   canReveal: boolean;
   onReveal: (targetPlayerId: string) => void;
@@ -1405,6 +1452,8 @@ function RoundTable({
                 player={player}
                 position={position}
                 highlight={isCurrent}
+                selectedCard={selectedCard}
+                onClearSelectedCard={onClearSelectedCard}
                 bidAmount={
                   isBidLeader ? roundState?.bidding.highestBid ?? 0 : null
                 }
@@ -1426,6 +1475,8 @@ function PlayerSeat({
   player,
   position,
   highlight,
+  selectedCard,
+  onClearSelectedCard,
   bidAmount,
   isRevealer,
   canReveal,
@@ -1436,6 +1487,8 @@ function PlayerSeat({
   player: Player;
   position: { x: number; y: number };
   highlight?: boolean;
+  selectedCard: CardType | null;
+  onClearSelectedCard: () => void;
   bidAmount: number | null;
   isRevealer?: boolean;
   canReveal: boolean;
@@ -1478,6 +1531,11 @@ function PlayerSeat({
         <button
           type="button"
           onClick={() => {
+            if (dropEnabled && selectedCard) {
+              onDropCard(selectedCard);
+              onClearSelectedCard();
+              return;
+            }
             if (canReveal) {
               onReveal(player.id);
             }
@@ -1495,12 +1553,13 @@ function PlayerSeat({
             const payload = event.dataTransfer.getData("text/plain");
             if (payload === "rose" || payload === "skull") {
               onDropCard(payload);
+              onClearSelectedCard();
             }
           }}
           disabled={!canReveal && !dropEnabled}
           className={`group relative flex flex-col items-center gap-2 ${
             dropEnabled || canReveal ? "cursor-pointer" : "cursor-default"
-          }`}
+          } ${dropEnabled && selectedCard ? "ring-2 ring-[var(--accent-2)]/50 rounded-2xl" : ""}`}
         >
           <div className="stack scale-75">
             {player.pile.length === 0 ? (
@@ -1551,6 +1610,8 @@ function HandCard({
   total,
   disabled,
   disableDrag = false,
+  selected = false,
+  onSelect,
   onPlay,
 }: {
   card: CardType;
@@ -1558,6 +1619,8 @@ function HandCard({
   total: number;
   disabled?: boolean;
   disableDrag?: boolean;
+  selected?: boolean;
+  onSelect?: () => void;
   onPlay: () => void;
 }) {
   const center = (total - 1) / 2;
@@ -1578,10 +1641,16 @@ function HandCard({
       }}
       onClick={() => {
         if (!disabled) {
+          if (disableDrag && onSelect) {
+            onSelect();
+            return;
+          }
           onPlay();
         }
       }}
-      className="group relative shrink-0 rounded-2xl border border-white/10 bg-black/30 px-3 py-2 transition-shadow hover:shadow-lg disabled:opacity-50"
+      className={`group relative shrink-0 rounded-2xl border border-white/10 bg-black/30 px-3 py-2 transition-shadow hover:shadow-lg disabled:opacity-50 ${
+        selected ? "ring-2 ring-[var(--accent-2)]/70" : ""
+      }`}
       style={{
         transform: `rotate(${rotation}deg) translateY(${lift * -1}px)`,
       }}
