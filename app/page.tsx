@@ -44,6 +44,7 @@ export default function Home() {
   const [avatarId, setAvatarId] = useState(DEFAULT_AVATAR_ID);
   const [roomCodeInput, setRoomCodeInput] = useState("");
   const [bidAmount, setBidAmount] = useState(1);
+  const [isCoarsePointer, setIsCoarsePointer] = useState(false);
 
   const supabase = useMemo(() => getSupabaseClient(), []);
   const onlineEnabled = Boolean(supabase);
@@ -79,6 +80,23 @@ export default function Home() {
   useEffect(() => {
     roomCodeRef.current = roomCode;
   }, [roomCode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const mediaQuery = window.matchMedia("(pointer: coarse)");
+    const updatePointer = (event: MediaQueryListEvent | MediaQueryList) => {
+      setIsCoarsePointer(event.matches);
+    };
+    updatePointer(mediaQuery);
+    if ("addEventListener" in mediaQuery) {
+      mediaQuery.addEventListener("change", updatePointer);
+      return () => mediaQuery.removeEventListener("change", updatePointer);
+    }
+    mediaQuery.addListener(updatePointer);
+    return () => mediaQuery.removeListener(updatePointer);
+  }, []);
 
   useEffect(() => {
     if (!supabase || !roomCode) {
@@ -878,6 +896,7 @@ export default function Home() {
                       index={index}
                       total={activePlayer.hand.length}
                       disabled={!canAct || roundState?.phase !== "place"}
+                      disableDrag={isCoarsePointer}
                       onPlay={() =>
                         dispatchAction({
                           type: "PLACE_CARD",
@@ -887,6 +906,42 @@ export default function Home() {
                       }
                     />
                   ))}
+                </div>
+                <div className="mt-3 flex flex-col gap-2 sm:hidden">
+                  <button
+                    onClick={() =>
+                      dispatchAction({
+                        type: "PLACE_CARD",
+                        playerId: activePlayer.id,
+                        card: "rose",
+                      })
+                    }
+                    disabled={
+                      !canAct ||
+                      roundState?.phase !== "place" ||
+                      !hasCard(activePlayer, "rose")
+                    }
+                    className="rounded-full bg-[var(--accent-2)] px-4 py-2 text-xs font-semibold text-black disabled:opacity-50"
+                  >
+                    Tap to play Rose
+                  </button>
+                  <button
+                    onClick={() =>
+                      dispatchAction({
+                        type: "PLACE_CARD",
+                        playerId: activePlayer.id,
+                        card: "skull",
+                      })
+                    }
+                    disabled={
+                      !canAct ||
+                      roundState?.phase !== "place" ||
+                      !hasCard(activePlayer, "skull")
+                    }
+                    className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.2em] text-white disabled:opacity-50"
+                  >
+                    Tap to play Skull
+                  </button>
                 </div>
               </div>
             )}
@@ -1495,12 +1550,14 @@ function HandCard({
   index,
   total,
   disabled,
+  disableDrag = false,
   onPlay,
 }: {
   card: CardType;
   index: number;
   total: number;
   disabled?: boolean;
+  disableDrag?: boolean;
   onPlay: () => void;
 }) {
   const center = (total - 1) / 2;
@@ -1510,9 +1567,9 @@ function HandCard({
     <button
       type="button"
       disabled={disabled}
-      draggable={!disabled}
+      draggable={!disabled && !disableDrag}
       onDragStart={(event) => {
-        if (disabled) {
+        if (disabled || disableDrag) {
           event.preventDefault();
           return;
         }
