@@ -1,4 +1,6 @@
+import type { CSSProperties } from "react";
 import type { CardType } from "./engine";
+import type { CardTheme } from "./avatars";
 
 type IconProps = {
   className?: string;
@@ -57,10 +59,31 @@ type CardProps = {
   card: CardType;
   revealed?: boolean;
   className?: string;
+  theme?: CardTheme;
 };
 
-export const FlipCard = ({ card, revealed = false, className }: CardProps) => (
-  <div className={`card ${revealed ? "flipped" : ""} ${className ?? ""}`}>
+export const FlipCard = ({
+  card,
+  revealed = false,
+  className,
+  theme,
+}: CardProps) => {
+  const style = theme
+    ? ({
+        "--card-front-start": theme.frontStart,
+        "--card-front-end": theme.frontEnd,
+        "--card-back-start": theme.backStart,
+        "--card-back-end": theme.backEnd,
+        "--card-accent": theme.accent,
+        "--card-ink": theme.ink,
+      } as CSSProperties)
+    : undefined;
+
+  return (
+    <div
+      className={`card ${revealed ? "flipped" : ""} ${className ?? ""}`}
+      style={style}
+    >
     <div className="card-inner">
       <div className="card-face card-back">
         <div className="flex flex-col items-center gap-1 text-center">
@@ -74,17 +97,18 @@ export const FlipCard = ({ card, revealed = false, className }: CardProps) => (
       </div>
       <div className="card-face card-front">
         {card === "skull" ? (
-          <SkullIcon className="h-12 w-12 text-[#3a1d1d]" />
+          <SkullIcon className="h-12 w-12 text-[var(--card-accent,#3a1d1d)]" />
         ) : (
-          <RoseIcon className="h-12 w-12 text-[#a23643]" />
+          <RoseIcon className="h-12 w-12 text-[var(--card-accent,#a23643)]" />
         )}
-        <span className="mt-1 text-xs font-semibold uppercase tracking-[0.2em] text-[#3a1d1d]">
+        <span className="mt-1 text-xs font-semibold uppercase tracking-[0.2em] text-[var(--card-ink,#3a1d1d)]">
           {card}
         </span>
       </div>
     </div>
   </div>
-);
+  );
+};
 
 type ScorePipProps = {
   filled?: boolean;

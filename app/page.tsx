@@ -16,7 +16,8 @@ import {
   normalizeRoomCode,
 } from "./game/engine";
 import type { Action, CardType, GameState, Player, RoundState } from "./game/engine";
-import { AVATARS, DEFAULT_AVATAR_ID, getAvatarById } from "./game/avatars";
+import type { CardTheme } from "./game/avatars";
+import { AVATARS, getAvatarById } from "./game/avatars";
 import { FlipCard, RoseIcon, ScorePip, SkullIcon } from "./game/ui";
 import { getSupabaseClient } from "./lib/supabaseClient";
 
@@ -41,7 +42,6 @@ export default function Home() {
   const [presenceIds, setPresenceIds] = useState<string[]>([]);
   const [view, setView] = useState<"entry" | "lobby">("entry");
   const [playerName, setPlayerName] = useState("");
-  const [avatarId, setAvatarId] = useState(DEFAULT_AVATAR_ID);
   const [roomCodeInput, setRoomCodeInput] = useState("");
   const [bidAmount, setBidAmount] = useState(1);
   const [isCoarsePointer, setIsCoarsePointer] = useState(false);
@@ -236,6 +236,15 @@ export default function Home() {
     (player) => player.id === roundState?.currentPlayerId
   );
 
+  const disabledAvatarIds = useMemo(() => {
+    if (!activePlayer) {
+      return [];
+    }
+    return state.players
+      .filter((player) => player.id !== activePlayer.id)
+      .map((player) => player.avatarId);
+  }, [activePlayer?.id, state.players]);
+
   useEffect(() => {
     if (!activePlayer || !roundState || roundState.phase !== "place") {
       setSelectedCard(null);
@@ -351,7 +360,6 @@ export default function Home() {
       const nextState = gameReducer(localRoom, {
         type: "ADD_PLAYER",
         name: trimmedName,
-        avatarId,
         id: clientId,
       });
       setState(nextState);
@@ -393,7 +401,6 @@ export default function Home() {
     const withPlayer = gameReducer(createdRoom, {
       type: "ADD_PLAYER",
       name: trimmedName,
-      avatarId,
       id: clientId,
     });
     if (withPlayer !== createdRoom) {
@@ -425,7 +432,6 @@ export default function Home() {
       const nextState = gameReducer(localRoom, {
         type: "ADD_PLAYER",
         name: trimmedName,
-        avatarId,
         id: clientId,
       });
       setState(nextState);
@@ -479,7 +485,6 @@ export default function Home() {
     const withPlayer = gameReducer(roomState, {
       type: "ADD_PLAYER",
       name: trimmedName,
-      avatarId,
       id: clientId,
     });
     if (withPlayer !== roomState) {
@@ -507,7 +512,6 @@ export default function Home() {
     dispatchAction({
       type: "ADD_PLAYER",
       name: trimmedName,
-      avatarId,
     });
     setPlayerName("");
   };
@@ -584,7 +588,9 @@ export default function Home() {
                 placeholder="Your name"
                 className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
               />
-              <AvatarPicker value={avatarId} onChange={setAvatarId} />
+              <p className="text-xs text-[var(--muted)]">
+                Avatar is assigned automatically once you join the room.
+              </p>
             </div>
           </div>
 
@@ -690,7 +696,6 @@ export default function Home() {
                   Add
                 </button>
               </div>
-              <AvatarPicker value={avatarId} onChange={setAvatarId} compact />
               <p className="text-xs text-[var(--muted)]">
                 Minimum {MIN_PLAYERS} players, maximum {MAX_PLAYERS}.
               </p>
@@ -728,6 +733,29 @@ export default function Home() {
                 ))}
               </div>
             </div>
+
+            {activePlayer && (
+              <div className="mt-8 grid gap-3">
+                <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                  Your Avatar
+                </p>
+                <AvatarPicker
+                  value={activePlayer.avatarId}
+                  onChange={(id) =>
+                    dispatchAction({
+                      type: "SET_AVATAR",
+                      playerId: activePlayer.id,
+                      avatarId: id,
+                    })
+                  }
+                  disabledIds={disabledAvatarIds}
+                  compact
+                />
+                <p className="text-xs text-[var(--muted)]">
+                  Avatars are unique per room.
+                </p>
+              </div>
+            )}
 
             <div className="mt-8 flex flex-wrap items-center gap-4">
               <button
@@ -923,6 +951,7 @@ export default function Home() {
                       total={activePlayer.hand.length}
                       disabled={!canAct || roundState?.phase !== "place"}
                       disableDrag={isCoarsePointer}
+                      theme={getAvatarById(activePlayer.avatarId).card}
                       selected={
                         selectedCard?.index === index &&
                         selectedCard.card === card
@@ -1202,6 +1231,26 @@ export default function Home() {
                 </div>
               </div>
 
+              {activePlayer && (
+                <div>
+                  <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                    Your Avatar
+                  </p>
+                  <AvatarPicker
+                    value={activePlayer.avatarId}
+                    onChange={(id) =>
+                      dispatchAction({
+                        type: "SET_AVATAR",
+                        playerId: activePlayer.id,
+                        avatarId: id,
+                      })
+                    }
+                    disabledIds={disabledAvatarIds}
+                    compact
+                  />
+                </div>
+              )}
+
               {!onlineEnabled && (
                 <div>
                   <label className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
@@ -1325,12 +1374,15 @@ function AvatarBadge({
 function AvatarPicker({
   value,
   onChange,
+  disabledIds = [],
   compact = false,
 }: {
   value: string;
   onChange: (id: string) => void;
+  disabledIds?: string[];
   compact?: boolean;
 }) {
+  const disabledSet = useMemo(() => new Set(disabledIds), [disabledIds]);
   return (
     <div
       className={`grid gap-2 ${
@@ -1339,13 +1391,17 @@ function AvatarPicker({
     >
       {AVATARS.map((avatar) => {
         const isSelected = avatar.id === value;
+        const isDisabled = disabledSet.has(avatar.id) && !isSelected;
         return (
           <button
             key={avatar.id}
             onClick={() => onChange(avatar.id)}
+            disabled={isDisabled}
             className={`flex flex-col items-center gap-2 rounded-2xl border px-3 py-3 text-left transition ${
               isSelected
                 ? "border-[var(--accent-2)]/60 bg-white/10"
+                : isDisabled
+                ? "border-white/5 bg-black/10 opacity-40"
                 : "border-white/10 bg-black/20 hover:bg-white/10"
             }`}
             type="button"
@@ -1496,6 +1552,7 @@ function PlayerSeat({
   dropEnabled: boolean;
   onDropCard: (card: CardType) => void;
 }) {
+  const avatar = getAvatarById(player.avatarId);
   return (
     <div
       className="absolute w-32 -translate-x-1/2 -translate-y-1/2 sm:w-36 lg:w-40"
@@ -1595,6 +1652,7 @@ function PlayerSeat({
                 card={card}
                 revealed
                 className="scale-75"
+                theme={avatar.card}
               />
             ))
           )}
@@ -1610,6 +1668,7 @@ function HandCard({
   total,
   disabled,
   disableDrag = false,
+  theme,
   selected = false,
   onSelect,
   onPlay,
@@ -1619,6 +1678,7 @@ function HandCard({
   total: number;
   disabled?: boolean;
   disableDrag?: boolean;
+  theme?: CardTheme;
   selected?: boolean;
   onSelect?: () => void;
   onPlay: () => void;
@@ -1655,7 +1715,7 @@ function HandCard({
         transform: `rotate(${rotation}deg) translateY(${lift * -1}px)`,
       }}
     >
-      <FlipCard card={card} revealed className="scale-90" />
+      <FlipCard card={card} revealed className="scale-90" theme={theme} />
     </button>
   );
 }

@@ -1,3 +1,5 @@
+import { AVATARS } from "./avatars";
+
 export const MIN_PLAYERS = 3;
 export const MAX_PLAYERS = 8;
 
@@ -15,6 +17,21 @@ const PLAYER_COLORS = [
 const ROOM_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 export type CardType = "rose" | "skull";
+
+const getAvailableAvatarId = (players: Player[], preferred?: string) => {
+  const taken = new Set(players.map((player) => player.avatarId));
+  if (preferred && AVATARS.some((avatar) => avatar.id === preferred)) {
+    if (!taken.has(preferred)) {
+      return preferred;
+    }
+  }
+  const available = AVATARS.find((avatar) => !taken.has(avatar.id));
+  return available?.id ?? AVATARS[0]?.id ?? "rose";
+};
+
+const getAvatarAccent = (avatarId: string) =>
+  AVATARS.find((avatar) => avatar.id === avatarId)?.card.accent ??
+  PLAYER_COLORS[0];
 
 export type Player = {
   id: string;
@@ -71,9 +88,10 @@ export type GameState = {
 
 export type Action =
   | { type: "INIT_ROOM"; roomId: string }
-  | { type: "ADD_PLAYER"; name: string; avatarId: string; id?: string }
+  | { type: "ADD_PLAYER"; name: string; avatarId?: string; id?: string }
   | { type: "REMOVE_PLAYER"; id: string }
   | { type: "SET_ACTIVE_PLAYER"; id: string }
+  | { type: "SET_AVATAR"; playerId: string; avatarId: string }
   | { type: "START_GAME" }
   | { type: "PLACE_CARD"; playerId: string; card: CardType }
   | { type: "START_BID"; playerId: string; amount: number }
@@ -244,20 +262,19 @@ export const gameReducer = (state: GameState, action: Action): GameState => {
         return {
           ...state,
           players: state.players.map((player) =>
-            player.id === playerId
-              ? { ...player, name, avatarId: action.avatarId }
-              : player
+            player.id === playerId ? { ...player, name } : player
           ),
         };
       }
       if (state.players.length >= MAX_PLAYERS) {
         return state;
       }
+      const avatarId = getAvailableAvatarId(state.players, action.avatarId);
       const player: Player = {
         id: playerId,
         name,
-        color: PLAYER_COLORS[state.players.length % PLAYER_COLORS.length],
-        avatarId: action.avatarId,
+        color: getAvatarAccent(avatarId),
+        avatarId,
         score: 0,
         hand: [],
         pile: [],
@@ -287,6 +304,33 @@ export const gameReducer = (state: GameState, action: Action): GameState => {
       return {
         ...state,
         activePlayerId: action.id,
+      };
+    }
+    case "SET_AVATAR": {
+      const target = state.players.find(
+        (player) => player.id === action.playerId
+      );
+      if (!target) {
+        return state;
+      }
+      const taken = state.players.some(
+        (player) =>
+          player.id !== action.playerId && player.avatarId === action.avatarId
+      );
+      if (taken) {
+        return state;
+      }
+      return {
+        ...state,
+        players: state.players.map((player) =>
+          player.id === action.playerId
+            ? {
+                ...player,
+                avatarId: action.avatarId,
+                color: getAvatarAccent(action.avatarId),
+              }
+            : player
+        ),
       };
     }
     case "START_GAME": {

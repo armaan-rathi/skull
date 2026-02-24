@@ -143,7 +143,11 @@ body {
       transparent 6px,
       transparent 12px
     ),
-    linear-gradient(160deg, #2a1a16, #4a2a24);
+    linear-gradient(
+      160deg,
+      var(--card-back-start, #2a1a16),
+      var(--card-back-end, #4a2a24)
+    );
   color: rgba(255, 255, 255, 0.7);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08),
     inset 0 -18px 24px rgba(0, 0, 0, 0.45);
@@ -155,9 +159,13 @@ body {
       rgba(214, 178, 110, 0.28),
       transparent 42%
     ),
-    linear-gradient(160deg, #f9f2e7, #ecd9c5);
+    linear-gradient(
+      160deg,
+      var(--card-front-start, #f9f2e7),
+      var(--card-front-end, #ecd9c5)
+    );
   transform: rotateY(180deg);
-  color: #2a1a16;
+  color: var(--card-ink, #2a1a16);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35),
     inset 0 -16px 22px rgba(0, 0, 0, 0.12);
 }
