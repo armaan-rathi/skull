@@ -94,12 +94,24 @@ export default function Home() {
       setIsCoarsePointer(event.matches);
     };
     updatePointer(mediaQuery);
-    if ("addEventListener" in mediaQuery) {
+    if (typeof mediaQuery.addEventListener === "function") {
       mediaQuery.addEventListener("change", updatePointer);
       return () => mediaQuery.removeEventListener("change", updatePointer);
     }
-    mediaQuery.addListener(updatePointer);
-    return () => mediaQuery.removeListener(updatePointer);
+    const legacyMediaQuery = mediaQuery as MediaQueryList & {
+      addListener?: (listener: (event: MediaQueryListEvent) => void) => void;
+      removeListener?: (listener: (event: MediaQueryListEvent) => void) => void;
+    };
+    if (legacyMediaQuery.addListener) {
+      legacyMediaQuery.addListener(
+        updatePointer as (event: MediaQueryListEvent) => void
+      );
+      return () =>
+        legacyMediaQuery.removeListener?.(
+          updatePointer as (event: MediaQueryListEvent) => void
+        );
+    }
+    return undefined;
   }, []);
 
   useEffect(() => {
