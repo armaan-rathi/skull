@@ -38,6 +38,7 @@ export default function Home() {
   const [roomCode, setRoomCode] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("offline");
   const [roomError, setRoomError] = useState<string | null>(null);
+  const [presenceIds, setPresenceIds] = useState<string[]>([]);
   const [view, setView] = useState<"entry" | "lobby">("entry");
   const [playerName, setPlayerName] = useState("");
   const [avatarId, setAvatarId] = useState(DEFAULT_AVATAR_ID);
@@ -84,7 +85,9 @@ export default function Home() {
       return;
     }
     const channel = supabase
-      .channel(`room:${roomCode}`)
+      .channel(`room:${roomCode}`, {
+        config: { presence: { key: clientId } },
+      })
       .on(
         "postgres_changes",
         {
@@ -102,48 +105,88 @@ export default function Home() {
           setRoomVersion(next.version);
         }
       )
+      .on("presence", { event: "sync" }, () => {
+        const state = channel.presenceState();
+        setPresenceIds(Object.keys(state));
+      })
+      .on("presence", { event: "join" }, () => {
+        const state = channel.presenceState();
+        setPresenceIds(Object.keys(state));
+      })
+      .on("presence", { event: "leave" }, () => {
+        const state = channel.presenceState();
+        setPresenceIds(Object.keys(state));
+      })
       .subscribe((status) => {
         if (status === "SUBSCRIBED") {
           setSyncStatus("online");
+          void channel.track({ playerId: clientId });
         }
       });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [supabase, roomCode]);
+  }, [supabase, roomCode, clientId]);
 
-  const syncRoomState = async (nextState: GameState) => {
+  const syncRoomState = async (action: Action, nextState: GameState) => {
     if (!supabase || !roomCodeRef.current) {
       return;
     }
-    const currentVersion = versionRef.current;
-    const nextVersion = currentVersion + 1;
-    const { data, error } = await supabase
-      .from("rooms")
-      .update({
-        state: nextState,
-        version: nextVersion,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("room_code", roomCodeRef.current)
-      .eq("version", currentVersion)
-      .select("version")
-      .single();
-
-    if (error || !data) {
-      const { data: latest } = await supabase
+    const tryUpdate = async (state: GameState, version: number) =>
+      supabase
         .from("rooms")
-        .select("state, version")
+        .update({
+          state,
+          version: version + 1,
+          updated_at: new Date().toISOString(),
+        })
         .eq("room_code", roomCodeRef.current)
+        .eq("version", version)
+        .select("version")
         .single();
-      if (latest) {
-        setState(latest.state as GameState);
-        setRoomVersion(latest.version);
-      }
+
+    const currentVersion = versionRef.current;
+    const { data, error } = await tryUpdate(nextState, currentVersion);
+
+    if (!error && data) {
+      setRoomVersion(currentVersion + 1);
+      setSyncStatus("online");
+      setRoomError(null);
       return;
     }
-    setRoomVersion(nextVersion);
+
+    const { data: latest, error: latestError } = await supabase
+      .from("rooms")
+      .select("state, version")
+      .eq("room_code", roomCodeRef.current)
+      .single();
+    if (latestError || !latest) {
+      setSyncStatus("error");
+      setRoomError("Sync failed. Check your connection.");
+      return;
+    }
+
+    const latestState = latest.state as GameState;
+    const recomputed = gameReducer(latestState, action);
+    if (recomputed !== latestState) {
+      const { data: retryData, error: retryError } = await tryUpdate(
+        recomputed,
+        latest.version
+      );
+      if (!retryError && retryData) {
+        setState(recomputed);
+        setRoomVersion(latest.version + 1);
+        setSyncStatus("online");
+        setRoomError(null);
+        return;
+      }
+    }
+
+    setState(latestState);
+    setRoomVersion(latest.version);
+    setSyncStatus("error");
+    setRoomError("Sync conflict. Please try again.");
   };
 
   const dispatchAction = (action: Action) => {
@@ -158,7 +201,7 @@ export default function Home() {
       return;
     }
     setState(nextState);
-    void syncRoomState(nextState);
+    void syncRoomState(action, nextState);
   };
 
   const roundState = state.roundState;
@@ -252,6 +295,11 @@ export default function Home() {
       : syncStatus === "error"
       ? "text-[var(--danger)]"
       : "text-[var(--muted)]";
+
+  const onlinePlayerIds = useMemo(
+    () => new Set(presenceIds),
+    [presenceIds]
+  );
 
   const trimmedName = playerName.trim();
   const normalizedRoom = normalizeRoomCode(roomCodeInput);
@@ -368,12 +416,17 @@ export default function Home() {
 
     const roomState = data.state as GameState;
     if (roomState.phase !== "lobby") {
-      setRoomError("That game already started. Join another room.");
       setState(roomState);
       setRoomCode(normalizedRoom);
       setRoomVersion(data.version);
       setView("lobby");
       setSyncStatus("online");
+      if (roomState.players.some((player) => player.id === clientId)) {
+        setPlayerName("");
+        setRoomError(null);
+        return;
+      }
+      setRoomError("That game already started. You can spectate for now.");
       return;
     }
 
@@ -433,13 +486,18 @@ export default function Home() {
           id: clientId,
         });
         if (nextState !== current) {
-          void syncRoomState(nextState);
+          void syncRoomState(
+            { type: "REMOVE_PLAYER", id: clientId },
+            nextState
+          );
           setState(nextState);
         }
       }
     }
     setRoomCode(null);
     setRoomVersion(0);
+    setSyncStatus("offline");
+    setPresenceIds([]);
     setState(createLobbyState());
     setView("entry");
     setPlayerName("");
@@ -681,241 +739,139 @@ export default function Home() {
       )}
 
       {state.phase !== "lobby" && (
-        <section className="relative z-10 grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)_320px]">
-          <aside className="panel animate-float rounded-3xl p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
-                  Round {state.round}
-                </p>
-                <p className="font-display text-2xl text-[var(--ink)]">
-                  {phaseLabel}
-                </p>
-              </div>
-              <div className="rounded-full border border-white/10 px-3 py-1 text-xs text-[var(--muted)]">
-                {getGameSummary(state)}
-              </div>
-            </div>
-
-            <div className="mt-6 space-y-4">
-              <div className="panel-soft rounded-2xl px-4 py-3 text-sm text-[var(--muted)]">
-                {currentPlayer ? (
-                  <>
-                    Turn:{" "}
-                    <span className="font-semibold text-white">
-                      {currentPlayer.name}
-                    </span>
-                  </>
-                ) : (
-                  "Waiting for players..."
-                )}
-              </div>
-
-              {activePlayer && (
-                <div className="panel-soft rounded-2xl px-4 py-3 text-sm text-[var(--muted)]">
-                  You are controlling{" "}
-                  <span className="font-semibold text-white">
-                    {activePlayer.name}
+        <section className="relative z-10 flex flex-col gap-4">
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px] xl:grid-rows-[minmax(0,1fr)_auto]">
+            <main className="panel animate-float flex flex-col rounded-3xl p-6 xl:col-start-1 xl:row-start-1">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                    Round {state.round}
+                  </p>
+                  <p className="font-display text-2xl text-[var(--ink)]">
+                    {phaseLabel}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-[var(--muted)]">
+                    {getGameSummary(state)}
                   </span>
-                  . {canAct ? "Your move." : "Waiting for turn."}
+                  <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-[var(--muted)]">
+                    Total down: {totalPlaced}
+                  </span>
+                  <span
+                    className={`rounded-full border border-white/10 px-3 py-1 text-xs ${syncTone}`}
+                  >
+                    {syncLabel}
+                  </span>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-[var(--muted)]">
+                <span className="font-semibold text-white">Status:</span>{" "}
+                {statusMessage}
+              </div>
+              {roomError && (
+                <div className="mt-3 rounded-2xl border border-[var(--danger)]/40 bg-black/40 px-4 py-2 text-xs text-[var(--danger)]">
+                  {roomError}
                 </div>
               )}
-            </div>
 
-            {state.phase === "gameEnd" && (
-              <div className="mt-6 rounded-2xl border border-[var(--accent-2)]/30 bg-black/30 p-4 text-sm text-[var(--muted)]">
-                <p className="font-display text-lg text-[var(--accent-2)]">
-                  {state.winnerId
-                    ? `${state.players.find((p) => p.id === state.winnerId)?.name ?? "Winner"} wins the table.`
-                    : "Last player standing."}
-                </p>
-                <div className="mt-4 flex flex-wrap gap-3">
-                  <button
-                    onClick={() => dispatchAction({ type: "START_GAME" })}
-                    className="rounded-full bg-[var(--accent-2)] px-5 py-2 text-xs font-semibold text-black"
-                  >
-                    Restart
-                  </button>
-                  <button
-                    onClick={() => dispatchAction({ type: "RESET_GAME" })}
-                    className="rounded-full border border-white/10 px-5 py-2 text-xs font-semibold text-white/80"
-                  >
-                    Back to Lobby
-                  </button>
-                  <button
-                    onClick={handleLeaveGame}
-                    className="rounded-full border border-white/10 px-5 py-2 text-xs font-semibold text-white/80"
-                  >
-                    Leave Game
-                  </button>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--muted)]">
+                <span className="rounded-full border border-white/10 bg-black/25 px-3 py-1">
+                  Turn:{" "}
+                  <span className="font-semibold text-white">
+                    {currentPlayer?.name ?? "Waiting"}
+                  </span>
+                </span>
+                {activePlayer && (
+                  <span className="rounded-full border border-white/10 bg-black/25 px-3 py-1">
+                    You:{" "}
+                    <span className="font-semibold text-white">
+                      {activePlayer.name}
+                    </span>{" "}
+                    · {canAct ? "Your move" : "Waiting"}
+                  </span>
+                )}
+              </div>
+
+              {state.phase === "gameEnd" && (
+                <div className="mt-4 rounded-2xl border border-[var(--accent-2)]/30 bg-black/30 p-4 text-sm text-[var(--muted)]">
+                  <p className="font-display text-lg text-[var(--accent-2)]">
+                    {state.winnerId
+                      ? `${state.players.find((p) => p.id === state.winnerId)?.name ?? "Winner"} wins the table.`
+                      : "Last player standing."}
+                  </p>
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <button
+                      onClick={() => dispatchAction({ type: "START_GAME" })}
+                      className="rounded-full bg-[var(--accent-2)] px-5 py-2 text-xs font-semibold text-black"
+                    >
+                      Restart
+                    </button>
+                    <button
+                      onClick={() => dispatchAction({ type: "RESET_GAME" })}
+                      className="rounded-full border border-white/10 px-5 py-2 text-xs font-semibold text-white/80"
+                    >
+                      Back to Lobby
+                    </button>
+                    <button
+                      onClick={handleLeaveGame}
+                      className="rounded-full border border-white/10 px-5 py-2 text-xs font-semibold text-white/80"
+                    >
+                      Leave Game
+                    </button>
+                  </div>
                 </div>
+              )}
+
+              <div className="mt-6 flex flex-1 items-center justify-center">
+                <RoundTable
+                  players={state.players}
+                  roundState={roundState}
+                  activePlayerId={activePlayer?.id ?? null}
+                  onlinePlayerIds={onlinePlayerIds}
+                  canPlace={canPlace}
+                  canReveal={
+                    roundState?.phase === "reveal" &&
+                    roundState.reveal.bidderId === activePlayer?.id
+                  }
+                  onReveal={(targetPlayerId) =>
+                    dispatchAction({
+                      type: "REVEAL_CARD",
+                      playerId: roundState?.reveal.bidderId ?? "",
+                      targetPlayerId,
+                    })
+                  }
+                  onDropCard={(card) => {
+                    if (!activePlayer || !canPlace) {
+                      return;
+                    }
+                    dispatchAction({
+                      type: "PLACE_CARD",
+                      playerId: activePlayer.id,
+                      card,
+                    });
+                  }}
+                />
               </div>
-            )}
-
-            {state.phase === "play" && roundState && (
-              <div className="mt-6 space-y-4">
-                {roundState.phase === "place" && activePlayer && (
-                  <ActionCard title="Placement">
-                    <div className="flex flex-wrap gap-2">
-                      <ActionButton
-                        disabled={!canAct || !hasCard(activePlayer, "rose")}
-                        onClick={() =>
-                          dispatchAction({
-                            type: "PLACE_CARD",
-                            playerId: activePlayer.id,
-                            card: "rose",
-                          })
-                        }
-                      >
-                        Place Rose
-                      </ActionButton>
-                      <ActionButton
-                        disabled={!canAct || !hasCard(activePlayer, "skull")}
-                        onClick={() =>
-                          dispatchAction({
-                            type: "PLACE_CARD",
-                            playerId: activePlayer.id,
-                            card: "skull",
-                          })
-                        }
-                      >
-                        Place Skull
-                      </ActionButton>
-                    </div>
-
-                    <div className="mt-4 grid gap-3">
-                      <label className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
-                        Start Bid
-                      </label>
-                      <div className="flex items-center gap-3">
-                        <input
-                          type="number"
-                          min={1}
-                          max={Math.max(1, totalPlaced)}
-                          value={bidAmount}
-                          onChange={(event) =>
-                            setBidAmount(Number(event.target.value))
-                          }
-                          className="w-20 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white"
-                        />
-                        <ActionButton
-                          disabled={!canAct || !canBid(activePlayer)}
-                          onClick={() =>
-                            dispatchAction({
-                              type: "START_BID",
-                              playerId: activePlayer.id,
-                              amount: clamp(
-                                bidAmount,
-                                1,
-                                totalPlaced > 0 ? totalPlaced : 1
-                              ),
-                            })
-                          }
-                        >
-                          Bid {bidAmount}
-                        </ActionButton>
-                      </div>
-                    </div>
-                  </ActionCard>
-                )}
-
-                {roundState.phase === "bid" && activePlayer && (
-                  <ActionCard title="Bidding">
-                    <p className="text-xs text-[var(--muted)]">
-                      Highest bid:{" "}
-                      <span className="font-semibold text-white">
-                        {roundState.bidding.highestBid}
-                      </span>{" "}
-                      {bidLeader ? `by ${bidLeader.name}` : ""}
-                    </p>
-                    <div className="mt-4 flex flex-wrap items-center gap-2">
-                      <input
-                        type="number"
-                        min={minBid}
-                        max={maxBid}
-                        value={bidAmount}
-                        onChange={(event) =>
-                          setBidAmount(Number(event.target.value))
-                        }
-                        className="w-20 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white"
-                      />
-                      <ActionButton
-                        disabled={!canRaise}
-                        onClick={() =>
-                          dispatchAction({
-                            type: "RAISE_BID",
-                            playerId: activePlayer.id,
-                            amount: clamp(bidAmount, minBid, maxBid),
-                          })
-                        }
-                      >
-                        Raise
-                      </ActionButton>
-                      <ActionButton
-                        disabled={!canAct}
-                        onClick={() =>
-                          dispatchAction({
-                            type: "PASS_BID",
-                            playerId: activePlayer.id,
-                          })
-                        }
-                      >
-                        Pass
-                      </ActionButton>
-                    </div>
-                  </ActionCard>
-                )}
-
-                {roundState.phase === "reveal" && (
-                  <ActionCard title="Reveal">
-                    <p className="text-sm text-[var(--muted)]">
-                      {revealBidder
-                        ? `${revealBidder.name} must reveal ${roundState.reveal.target} cards.`
-                        : "Reveal in progress."}
-                    </p>
-                    <p className="text-xs text-[var(--muted)]">
-                      Revealed so far: {roundState.reveal.revealedCount}
-                    </p>
-                    <p className="mt-2 text-xs text-[var(--muted)]">
-                      {activePlayer?.id === roundState.reveal.bidderId
-                        ? "Click your own pile first, then choose other piles to flip."
-                        : "Waiting for the bidder to reveal."}
-                    </p>
-                  </ActionCard>
-                )}
-
-                {roundState.phase === "roundEnd" && (
-                  <ActionCard title="Round Result">
-                    <p className="text-sm text-[var(--muted)]">
-                      {roundState.result?.message ??
-                        "The round has resolved."}
-                    </p>
-                    <div className="mt-4 flex flex-wrap gap-3">
-                      <ActionButton
-                        onClick={() => dispatchAction({ type: "NEXT_ROUND" })}
-                      >
-                        Next Round
-                      </ActionButton>
-                      <ActionButton
-                        onClick={() => dispatchAction({ type: "RESET_GAME" })}
-                      >
-                        Back to Lobby
-                      </ActionButton>
-                    </div>
-                  </ActionCard>
-                )}
-              </div>
-            )}
+            </main>
 
             {activePlayer && state.phase === "play" && (
-              <div className="mt-6">
-                <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
-                  Your Hand
-                </p>
-                <p className="mt-2 text-xs text-[var(--muted)]">
-                  Drag a card to your pile or click to play it.
-                </p>
-                <div className="mt-3 -mx-2 flex items-center gap-3 overflow-x-auto px-2 pb-2 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0">
+              <div className="panel animate-float rounded-3xl px-6 py-4 xl:col-start-1 xl:row-start-2">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                      Your Hand
+                    </p>
+                    <p className="mt-1 text-xs text-[var(--muted)]">
+                      Drag a card to your pile or click to play it.
+                    </p>
+                  </div>
+                  <div className="text-xs text-[var(--muted)]">
+                    {activePlayer.hand.length} cards
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center justify-center gap-2 sm:gap-3">
                   {activePlayer.hand.map((card, index) => (
                     <HandCard
                       key={`${card}-${index}`}
@@ -936,148 +892,265 @@ export default function Home() {
               </div>
             )}
 
-            <div className="mt-6">
-              <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
-                Table Log
-              </p>
-              <div className="mt-3 space-y-2 text-xs text-[var(--muted)]">
-                {state.log
-                  .slice()
-                  .reverse()
-                  .map((entry, index) => (
-                    <p key={`${entry}-${index}`}>{entry}</p>
-                  ))}
-              </div>
-            </div>
+            <aside className="panel animate-float flex flex-col gap-4 rounded-3xl p-6 xl:col-start-2 xl:row-start-1 xl:row-span-2">
+              {state.phase === "play" && roundState && (
+                <div className="space-y-4">
+                  {roundState.phase === "place" && activePlayer && (
+                    <ActionCard title="Placement">
+                      <div className="flex flex-wrap gap-2">
+                        <ActionButton
+                          disabled={!canAct || !hasCard(activePlayer, "rose")}
+                          onClick={() =>
+                            dispatchAction({
+                              type: "PLACE_CARD",
+                              playerId: activePlayer.id,
+                              card: "rose",
+                            })
+                          }
+                        >
+                          Place Rose
+                        </ActionButton>
+                        <ActionButton
+                          disabled={!canAct || !hasCard(activePlayer, "skull")}
+                          onClick={() =>
+                            dispatchAction({
+                              type: "PLACE_CARD",
+                              playerId: activePlayer.id,
+                              card: "skull",
+                            })
+                          }
+                        >
+                          Place Skull
+                        </ActionButton>
+                      </div>
 
-            <div className="mt-6">
+                      <div className="mt-4 grid gap-3">
+                        <label className="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">
+                          Start Bid
+                        </label>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="number"
+                            min={1}
+                            max={Math.max(1, totalPlaced)}
+                            value={bidAmount}
+                            onChange={(event) =>
+                              setBidAmount(Number(event.target.value))
+                            }
+                            className="w-20 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white"
+                          />
+                          <ActionButton
+                            disabled={!canAct || !canBid(activePlayer)}
+                            onClick={() =>
+                              dispatchAction({
+                                type: "START_BID",
+                                playerId: activePlayer.id,
+                                amount: clamp(
+                                  bidAmount,
+                                  1,
+                                  totalPlaced > 0 ? totalPlaced : 1
+                                ),
+                              })
+                            }
+                          >
+                            Bid {bidAmount}
+                          </ActionButton>
+                        </div>
+                      </div>
+                    </ActionCard>
+                  )}
+
+                  {roundState.phase === "bid" && activePlayer && (
+                    <ActionCard title="Bidding">
+                      <p className="text-xs text-[var(--muted)]">
+                        Highest bid:{" "}
+                        <span className="font-semibold text-white">
+                          {roundState.bidding.highestBid}
+                        </span>{" "}
+                        {bidLeader ? `by ${bidLeader.name}` : ""}
+                      </p>
+                      <div className="mt-4 flex flex-wrap items-center gap-2">
+                        <input
+                          type="number"
+                          min={minBid}
+                          max={maxBid}
+                          value={bidAmount}
+                          onChange={(event) =>
+                            setBidAmount(Number(event.target.value))
+                          }
+                          className="w-20 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white"
+                        />
+                        <ActionButton
+                          disabled={!canRaise}
+                          onClick={() =>
+                            dispatchAction({
+                              type: "RAISE_BID",
+                              playerId: activePlayer.id,
+                              amount: clamp(bidAmount, minBid, maxBid),
+                            })
+                          }
+                        >
+                          Raise
+                        </ActionButton>
+                        <ActionButton
+                          disabled={!canAct}
+                          onClick={() =>
+                            dispatchAction({
+                              type: "PASS_BID",
+                              playerId: activePlayer.id,
+                            })
+                          }
+                        >
+                          Pass
+                        </ActionButton>
+                      </div>
+                    </ActionCard>
+                  )}
+
+                  {roundState.phase === "reveal" && (
+                    <ActionCard title="Reveal">
+                      <p className="text-sm text-[var(--muted)]">
+                        {revealBidder
+                          ? `${revealBidder.name} must reveal ${roundState.reveal.target} cards.`
+                          : "Reveal in progress."}
+                      </p>
+                      <p className="text-xs text-[var(--muted)]">
+                        Revealed so far: {roundState.reveal.revealedCount}
+                      </p>
+                      <p className="mt-2 text-xs text-[var(--muted)]">
+                        {activePlayer?.id === roundState.reveal.bidderId
+                          ? "Click your own pile first, then choose other piles to flip."
+                          : "Waiting for the bidder to reveal."}
+                      </p>
+                    </ActionCard>
+                  )}
+
+                  {roundState.phase === "roundEnd" && (
+                    <ActionCard title="Round Result">
+                      <p className="text-sm text-[var(--muted)]">
+                        {roundState.result?.message ??
+                          "The round has resolved."}
+                      </p>
+                      <div className="mt-4 flex flex-wrap gap-3">
+                        <ActionButton
+                          onClick={() => dispatchAction({ type: "NEXT_ROUND" })}
+                        >
+                          Next Round
+                        </ActionButton>
+                        <ActionButton
+                          onClick={() => dispatchAction({ type: "RESET_GAME" })}
+                        >
+                          Back to Lobby
+                        </ActionButton>
+                      </div>
+                    </ActionCard>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                    Players
+                  </p>
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-[var(--muted)]">
+                    Online {state.players.filter((player) => onlinePlayerIds.has(player.id)).length}/{state.players.length}
+                  </span>
+                </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+                  {state.players.map((player) => (
+                    <div
+                      key={player.id}
+                      className="panel-soft rounded-2xl px-4 py-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <AvatarBadge
+                            avatarId={player.avatarId}
+                            ringColor={player.color}
+                            size="sm"
+                          />
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-semibold text-white">
+                                {player.name}
+                              </p>
+                              <span
+                                className={`h-2 w-2 rounded-full ${
+                                  onlinePlayerIds.has(player.id)
+                                    ? "bg-[var(--success)]"
+                                    : "bg-white/20"
+                                }`}
+                                title={
+                                  onlinePlayerIds.has(player.id)
+                                    ? "Online"
+                                    : "Offline"
+                                }
+                              />
+                            </div>
+                            <p className="text-xs text-[var(--muted)]">
+                              {player.eliminated
+                                ? "Eliminated"
+                                : `${player.hand.length} cards in hand`}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <ScorePip filled={player.score >= 1} />
+                          <ScorePip filled={player.score >= 2} />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {!onlineEnabled && (
+                <div>
+                  <label className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                    Control As
+                  </label>
+                  <select
+                    value={state.activePlayerId ?? ""}
+                    onChange={(event) =>
+                      dispatchAction({
+                        type: "SET_ACTIVE_PLAYER",
+                        id: event.target.value,
+                      })
+                    }
+                    className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white"
+                  >
+                    {getActivePlayerOptions(state.players).map((player) => (
+                      <option key={player.id} value={player.id}>
+                        {player.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <details className="panel-soft rounded-2xl px-4 py-3">
+                <summary className="cursor-pointer text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
+                  Table Log
+                </summary>
+                <div className="mt-3 max-h-40 space-y-2 overflow-y-auto text-xs text-[var(--muted)]">
+                  {state.log
+                    .slice()
+                    .reverse()
+                    .map((entry, index) => (
+                      <p key={`${entry}-${index}`}>{entry}</p>
+                    ))}
+                </div>
+              </details>
+
               <button
                 onClick={handleLeaveGame}
-                className="w-full rounded-2xl border border-white/10 px-4 py-3 text-xs font-semibold uppercase tracking-[0.2em] text-white/70 hover:text-white"
+                className="mt-auto w-full rounded-2xl border border-white/10 px-4 py-3 text-xs font-semibold uppercase tracking-[0.2em] text-white/70 hover:text-white"
               >
                 Leave Game
               </button>
-            </div>
-          </aside>
-
-          <main className="panel animate-float rounded-3xl p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
-                  The Table
-                </p>
-                <p className="font-display text-2xl text-[var(--ink)]">
-                  Place, bid, reveal
-                </p>
-              </div>
-              <div className="text-xs text-[var(--muted)]">
-                Total cards down: {totalPlaced}
-              </div>
-            </div>
-
-            <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-[var(--muted)]">
-              <span className="font-semibold text-white">Status:</span>{" "}
-              {statusMessage}
-            </div>
-
-            <RoundTable
-              players={state.players}
-              roundState={roundState}
-              activePlayerId={activePlayer?.id ?? null}
-              canPlace={canPlace}
-              canReveal={
-                roundState?.phase === "reveal" &&
-                roundState.reveal.bidderId === activePlayer?.id
-              }
-                  onReveal={(targetPlayerId) =>
-                    dispatchAction({
-                      type: "REVEAL_CARD",
-                      playerId: roundState?.reveal.bidderId ?? "",
-                      targetPlayerId,
-                    })
-                  }
-              onDropCard={(card) => {
-                if (!activePlayer || !canPlace) {
-                  return;
-                }
-                dispatchAction({
-                  type: "PLACE_CARD",
-                  playerId: activePlayer.id,
-                  card,
-                });
-              }}
-            />
-          </main>
-
-          <aside className="panel animate-float rounded-3xl p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
-                  Players
-                </p>
-                <p className="font-display text-2xl text-[var(--ink)]">
-                  Scoreboard
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-6 space-y-3">
-              {state.players.map((player) => (
-                <div
-                  key={player.id}
-                  className="panel-soft rounded-2xl px-4 py-3"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <AvatarBadge
-                        avatarId={player.avatarId}
-                        ringColor={player.color}
-                        size="sm"
-                      />
-                      <div>
-                        <p className="text-sm font-semibold text-white">
-                          {player.name}
-                        </p>
-                        <p className="text-xs text-[var(--muted)]">
-                          {player.eliminated
-                            ? "Eliminated"
-                            : `${player.hand.length} cards in hand`}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <ScorePip filled={player.score >= 1} />
-                      <ScorePip filled={player.score >= 2} />
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {!onlineEnabled && (
-              <div className="mt-6">
-                <label className="text-xs uppercase tracking-[0.3em] text-[var(--muted)]">
-                  Control As
-                </label>
-                <select
-                  value={state.activePlayerId ?? ""}
-                  onChange={(event) =>
-                    dispatchAction({
-                      type: "SET_ACTIVE_PLAYER",
-                      id: event.target.value,
-                    })
-                  }
-                  className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white"
-                >
-                  {getActivePlayerOptions(state.players).map((player) => (
-                    <option key={player.id} value={player.id}>
-                      {player.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </aside>
+            </aside>
+          </div>
         </section>
       )}
     </div>
@@ -1197,6 +1270,7 @@ function RoundTable({
   players,
   roundState,
   activePlayerId,
+  onlinePlayerIds,
   canPlace,
   canReveal,
   onReveal,
@@ -1205,22 +1279,44 @@ function RoundTable({
   players: Player[];
   roundState: RoundState | null;
   activePlayerId: string | null;
+  onlinePlayerIds: Set<string>;
   canPlace: boolean;
   canReveal: boolean;
   onReveal: (targetPlayerId: string) => void;
   onDropCard: (card: CardType) => void;
 }) {
-  const radius = Math.min(220, 150 + Math.max(0, players.length - 4) * 18);
+  const orderedPlayers = useMemo(() => {
+    if (!activePlayerId) {
+      return players;
+    }
+    const activeIndex = players.findIndex(
+      (player) => player.id === activePlayerId
+    );
+    if (activeIndex === -1) {
+      return players;
+    }
+    return [
+      players[activeIndex],
+      ...players.slice(activeIndex + 1),
+      ...players.slice(0, activeIndex),
+    ];
+  }, [players, activePlayerId]);
+
+  const radius = Math.min(
+    220,
+    150 + Math.max(0, orderedPlayers.length - 4) * 18
+  );
   const positions = useMemo(
     () =>
-      players.map((_, index) => {
-        const angle = (Math.PI * 2 * index) / players.length - Math.PI / 2;
+      orderedPlayers.map((_, index) => {
+        const angle =
+          (Math.PI * 2 * index) / orderedPlayers.length + Math.PI / 2;
         return {
           x: Math.cos(angle) * radius,
           y: Math.sin(angle) * radius,
         };
       }),
-    [players, radius]
+    [orderedPlayers, radius]
   );
   const bidderId = roundState?.reveal.bidderId ?? null;
   const bidderHasPile =
@@ -1229,13 +1325,13 @@ function RoundTable({
       : 0;
 
   return (
-    <div className="relative mx-auto mt-6 aspect-square w-full max-w-[420px] sm:max-w-[520px] lg:max-w-[600px]">
+    <div className="relative mx-auto aspect-square w-full max-w-[360px] sm:max-w-[440px] lg:max-w-[520px]">
       <div className="absolute inset-0 scale-90 origin-center sm:scale-100">
         <div className="relative h-full w-full">
           <div className="absolute inset-[18%] rounded-full border border-white/10 bg-black/25 shadow-[inset_0_0_80px_rgba(0,0,0,0.6)]" />
           <div className="absolute inset-[26%] rounded-full border border-white/5 bg-black/30" />
 
-          {players.map((player, index) => {
+          {orderedPlayers.map((player, index) => {
             const position = positions[index];
             const isCurrent = player.id === roundState?.currentPlayerId;
             const isBidLeader =
@@ -1257,6 +1353,7 @@ function RoundTable({
                 player={player}
                 position={position}
                 highlight={isCurrent}
+                isOnline={onlinePlayerIds.has(player.id)}
                 bidAmount={
                   isBidLeader ? roundState?.bidding.highestBid ?? 0 : null
                 }
@@ -1278,6 +1375,7 @@ function PlayerSeat({
   player,
   position,
   highlight,
+  isOnline,
   bidAmount,
   isRevealer,
   canReveal,
@@ -1288,6 +1386,7 @@ function PlayerSeat({
   player: Player;
   position: { x: number; y: number };
   highlight?: boolean;
+  isOnline: boolean;
   bidAmount: number | null;
   isRevealer?: boolean;
   canReveal: boolean;
@@ -1307,7 +1406,7 @@ function PlayerSeat({
       <div
         className={`flex flex-col items-center gap-2 rounded-2xl border border-white/10 bg-black/35 px-3 py-3 text-center ${
           highlight ? "glow-ring" : ""
-        }`}
+        } ${!isOnline ? "opacity-70" : ""}`}
       >
         {(bidAmount || isRevealer) && (
           <div className="flex flex-col items-center gap-1">
@@ -1325,7 +1424,15 @@ function PlayerSeat({
         )}
 
         <AvatarBadge avatarId={player.avatarId} ringColor={player.color} />
-        <p className="text-xs font-semibold text-white">{player.name}</p>
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-semibold text-white">{player.name}</p>
+          <span
+            className={`h-2 w-2 rounded-full ${
+              isOnline ? "bg-[var(--success)]" : "bg-white/20"
+            }`}
+            title={isOnline ? "Online" : "Offline"}
+          />
+        </div>
 
         <button
           type="button"
@@ -1437,9 +1544,6 @@ function HandCard({
       }}
     >
       <FlipCard card={card} revealed className="scale-90" />
-      <span className="mt-2 block text-[10px] uppercase tracking-[0.3em] text-[var(--muted)]">
-        {card}
-      </span>
     </button>
   );
 }
